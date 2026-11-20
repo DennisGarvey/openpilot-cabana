@@ -20,6 +20,7 @@ class SignalTreeDelegate : public QStyledItemDelegate {
 
   SignalTreeDelegate(QObject* parent);
   void clearHoverState();
+  void openValueTable(QWidget* parent, const QModelIndex& index) const;
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
   QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override;
   QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& idx) const override;
@@ -29,10 +30,6 @@ class SignalTreeDelegate : public QStyledItemDelegate {
   bool helpEvent(QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option,
                  const QModelIndex& index) override;
   int nameColumnWidth(const dbc::Signal* sig) const;
-  inline int getButtonsWidth() const {
-    // Calculate total space taken by buttons area on the right
-    return (2 * kBtnSize) + kBtnSpacing + kPadding;
-  }
 
  signals:
   void removeRequested(const dbc::Signal*);
@@ -43,15 +40,16 @@ class SignalTreeDelegate : public QStyledItemDelegate {
   int buttonAt(const QPoint& pos, const QRect& rect) const;
   void drawNameColumn(QPainter* p, QRect r, const QStyleOptionViewItem& opt, SignalTreeModel::Item* item,
                       const QModelIndex& idx) const;
-  void drawDataColumn(QPainter* p, QRect r, const QStyleOptionViewItem& opt, SignalTreeModel::Item* item,
-                      const QModelIndex& idx) const;
+  void drawHistoryColumn(QPainter* p, const QRect& rect, bool selected, SignalTreeModel::Item* item) const;
+  void drawValueColumn(QPainter* p, QRect rect, const QStyleOptionViewItem& opt, SignalTreeModel::Item* item,
+                       const QModelIndex& idx) const;
   void drawButtons(QPainter* painter, const QStyleOptionViewItem& option, SignalTreeModel::Item* item,
                    const QModelIndex& idx) const;
 
   QValidator* name_validator = nullptr;
   QValidator* double_validator = nullptr;
   QValidator* node_validator = nullptr;
-  QFont label_font, minmax_font, value_font;
+  QFont label_font, value_font;
   QColor signal_text_color;
   mutable QPersistentModelIndex hoverIndex;
   mutable int hoverButton = -1;  // -1: none, 0: remove, 1: plot

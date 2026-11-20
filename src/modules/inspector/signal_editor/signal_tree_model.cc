@@ -1,7 +1,5 @@
 #include "signal_tree_model.h"
 
-#include <QApplication>
-#include <QFontDatabase>
 #include <QMessageBox>
 #include <QtConcurrent>
 #include <span>
@@ -26,7 +24,6 @@ QString signalTypeToString(dbc::Signal::Type type) {
 }
 
 SignalTreeModel::SignalTreeModel(QObject* parent) : QAbstractItemModel(parent) {
-  value_font = qApp->font();
   root = std::make_unique<Item>(Item::Root, "", nullptr, nullptr);
 
   connect(GetDBC(), &dbc::Manager::DBCFileChanged, this, &SignalTreeModel::rebuild);
@@ -49,25 +46,21 @@ void SignalTreeModel::setMessage(const MessageId& id) {
 }
 
 void SignalTreeModel::updateValues(const MessageSnapshot* msg) {
-  QFontMetrics fm(value_font);
-  int current_max = 0;
-
+  bool changed = false;
   for (auto* item : root->children) {
+    QString value = item->sig_val;
     if (msg->size == 0) {
-      item->sig_val = QStringLiteral("-");
-    } else {
-      if (auto val = item->sig->parse(msg->data.data(), msg->size)) {
-        item->sig_val = item->sig->formatValue(*val);
-      }
+      value = QStringLiteral("-");
+    } else if (auto val = item->sig->parse(msg->data.data(), msg->size)) {
+      value = item->sig->formatValue(*val);
     }
-    item->value_width = fm.horizontalAdvance(item->sig_val);
-    current_max = std::max(current_max, item->value_width);
+    if (value != item->sig_val) {
+      item->sig_val = std::move(value);
+      changed = true;
+    }
   }
-
-  current_max += 10;
-  // Update max width if current exceeds it or if there's significant shrinkage
-  if (current_max > max_value_width || max_value_width - current_max > 40) {
-    max_value_width = current_max;
+  if (changed) {
+    emit dataChanged(index(0, ValueColumn), index(rowCount() - 1, ValueColumn), {Qt::DisplayRole, Qt::ToolTipRole});
   }
 }
 
@@ -76,7 +69,7 @@ void SignalTreeModel::updateSparklines(const MessageSnapshot* msg, int first_row
     for (auto* item : root->children) {
       item->sparkline->clearHistory();
     }
-    emit dataChanged(index(first_row, 1), index(last_row, 1), {Qt::DisplayRole});
+    emit dataChanged(index(first_row, HistoryColumn), index(last_row, HistoryColumn));
     return;
   }
 
@@ -94,7 +87,7 @@ void SignalTreeModel::updateSparklines(const MessageSnapshot* msg, int first_row
   items.reserve(last_row - first_row + 1);
   bool has_stale_items = false;
   for (int i = first_row; i <= last_row; ++i) {
-    auto* item = itemFromIndex(index(i, 1));
+    auto* item = root->children[i];
     items << item;
     if (!item->sparkline->isUpToDate(current_ns)) has_stale_items = true;
   }
@@ -119,13 +112,13 @@ void SignalTreeModel::updateSparklines(const MessageSnapshot* msg, int first_row
     item->sparkline->update(item->sig, range.first, range.second, current_ns, settings.sparkline_range, size);
   });
 
-  emit dataChanged(index(first_row, 1), index(last_row, 1), {Qt::DisplayRole});
+  emit dataChanged(index(first_row, HistoryColumn), index(last_row, HistoryColumn));
 }
 
 void SignalTreeModel::updateChartedSignals(const QMap<MessageId, QSet<const dbc::Signal*>>& opened) {
   charted_signals_ = opened;
   if (rowCount() > 0) {
-    emit dataChanged(index(0, 0), index(rowCount() - 1, 1), {IsChartedRole});
+    emit dataChanged(index(0, ValueColumn), index(rowCount() - 1, ValueColumn), {IsChartedRole});
   }
 }
 
@@ -206,8 +199,7 @@ Qt::ItemFlags SignalTreeModel::flags(const QModelIndex& index) const {
   const Item* item = itemFromIndex(index);
   Qt::ItemFlags f = Qt::ItemIsEnabled | Qt::ItemIsSelectable;
 
-  // Only the second column for non-parent nodes is interactive
-  if (index.column() == 1 && item->type != Item::Sig && item->type != Item::ExtraInfo) {
+  if (index.column() == ValueColumn && item->type != Item::Sig && item->type != Item::ExtraInfo) {
     if (item->type == Item::Endian || item->type == Item::Signed) {
       f |= Qt::ItemIsUserCheckable;
     } else {
@@ -228,11 +220,29 @@ int SignalTreeModel::signalRow(const dbc::Signal* sig) const {
   return it != root->children.end() ? std::distance(root->children.begin(), it) : -1;
 }
 
+QModelIndex SignalTreeModel::valueTableIndex(const dbc::Signal* sig) {
+  const QModelIndex signal = index(signalRow(sig), NameColumn);
+  if (!signal.isValid()) return {};
+
+  if (canFetchMore(signal)) fetchMore(signal);
+  for (int row = 0; row < rowCount(signal); ++row) {
+    const QModelIndex details = index(row, NameColumn, signal);
+    if (itemFromIndex(details)->type != Item::ExtraInfo) continue;
+    if (canFetchMore(details)) fetchMore(details);
+    for (int child = 0; child < rowCount(details); ++child) {
+      const QModelIndex property = index(child, ValueColumn, details);
+      if (itemFromIndex(property)->type == Item::ValueTable) return property;
+    }
+    break;
+  }
+  return {};
+}
+
 QModelIndex SignalTreeModel::index(int row, int column, const QModelIndex& parent) const {
   if (parent.isValid() && parent.column() != 0) return {};
 
   auto* parent_item = itemFromIndex(parent);
-  if (row >= 0 && row < parent_item->children.size()) {
+  if (row >= 0 && row < parent_item->children.size() && column >= 0 && column < ColumnCount) {
     return createIndex(row, column, parent_item->children[row]);
   }
   return {};
@@ -247,14 +257,24 @@ QModelIndex SignalTreeModel::parent(const QModelIndex& index) const {
   return createIndex(parent_item->row(), 0, parent_item);
 }
 
+QVariant SignalTreeModel::headerData(int section, Qt::Orientation orientation, int role) const {
+  if (orientation == Qt::Horizontal && role == Qt::DisplayRole) {
+    if (section == NameColumn) return tr("Signal");
+    if (section == HistoryColumn) return tr("History");
+    if (section == ValueColumn) return tr("Value");
+  }
+  return {};
+}
+
 QVariant SignalTreeModel::data(const QModelIndex& index, int role) const {
   if (!index.isValid()) return {};
 
   const Item* item = itemFromIndex(index);
   if (role == Qt::DisplayRole || role == Qt::EditRole) {
-    if (index.column() == 0) {
+    if (index.column() == NameColumn) {
       return item->type == Item::Sig ? item->sig->name : item->title;
     }
+    if (index.column() != ValueColumn) return {};
 
     switch (item->type) {
       case Item::Sig: return item->sig_val;
@@ -281,13 +301,14 @@ QVariant SignalTreeModel::data(const QModelIndex& index, int role) const {
     return {};
   }
 
-  if (role == Qt::CheckStateRole && index.column() == 1) {
+  if (role == Qt::CheckStateRole && index.column() == ValueColumn) {
     if (item->type == Item::Endian) return item->sig->is_little_endian ? Qt::Checked : Qt::Unchecked;
     if (item->type == Item::Signed) return item->sig->is_signed ? Qt::Checked : Qt::Unchecked;
   }
 
-  if (role == Qt::ToolTipRole && item->type == Item::Sig && index.column() == 0) {
-    return formatSignalToolTip(item->sig);
+  if (role == Qt::ToolTipRole && item->type == Item::Sig) {
+    if (index.column() == NameColumn) return formatSignalToolTip(item->sig);
+    if (index.column() == ValueColumn) return item->sig_val.toHtmlEscaped().prepend("<qt>").append("</qt>");
   }
 
   if (role == IsChartedRole && item->type == Item::Sig) {
@@ -330,7 +351,7 @@ void SignalTreeModel::highlightSignalRow(const dbc::Signal* sig) {
     const bool highlight = (root->children[i]->sig == sig);
     if (root->children[i]->highlight != highlight) {
       root->children[i]->highlight = highlight;
-      emit dataChanged(index(i, 0), index(i, 1), {Qt::DecorationRole, Qt::DisplayRole});
+      emit dataChanged(index(i, NameColumn), index(i, ValueColumn), {Qt::DecorationRole, Qt::DisplayRole});
     }
   }
 }
@@ -373,7 +394,7 @@ void SignalTreeModel::handleSignalUpdated(const dbc::Signal* sig) {
   int row = signalRow(sig);
   if (row == -1) return;
 
-  emit dataChanged(index(row, 0), index(row, 1), {Qt::DisplayRole, Qt::EditRole, Qt::CheckStateRole});
+  emit dataChanged(index(row, NameColumn), index(row, ValueColumn), {Qt::DisplayRole, Qt::EditRole, Qt::CheckStateRole});
 
   if (filter_str.isEmpty()) {
     // Move row when the order changes

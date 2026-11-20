@@ -5,7 +5,7 @@
 
 SignalTree::SignalTree(QWidget* parent) : QTreeView(parent) {
   setFrameShape(QFrame::NoFrame);
-  setHeaderHidden(true);
+  setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
   setMouseTracking(true);
   setExpandsOnDoubleClick(true);
   setUniformRowHeights(true);

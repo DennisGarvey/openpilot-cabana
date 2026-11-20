@@ -1,11 +1,14 @@
 #include "signal_editor.h"
 
 #include <QApplication>
+#include <QCursor>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QShortcut>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 #include "core/commands/commands.h"
@@ -20,9 +23,27 @@ SignalEditor::SignalEditor(ChartsPanel* charts, QWidget* parent) : QFrame(parent
 
   QHeaderView* header = tree->header();
   header->setCascadingSectionResizes(false);
+  header->setMinimumSectionSize(100);
   header->setStretchLastSection(true);
-  header->setSectionResizeMode(0, QHeaderView::Interactive);
-  header->setSectionResizeMode(1, QHeaderView::Stretch);
+  header->setSectionResizeMode(SignalTreeModel::NameColumn, QHeaderView::Interactive);
+  header->setSectionResizeMode(SignalTreeModel::HistoryColumn, QHeaderView::Interactive);
+  header->setSectionResizeMode(SignalTreeModel::ValueColumn, QHeaderView::Stretch);
+  connect(header, &QHeaderView::sectionResized, this, [this](int section, int, int) {
+    if (section == SignalTreeModel::NameColumn) nameColumnManuallySized = true;
+    if (section == SignalTreeModel::HistoryColumn) {
+      historyColumnManuallySized = true;
+      updateState();
+    }
+  });
+  connect(header, &QHeaderView::sectionHandleDoubleClicked, this, [this](int section) {
+    if (section == SignalTreeModel::NameColumn) {
+      nameColumnManuallySized = true;
+      tree->setColumnWidth(section, signalNameWidth());
+    } else if (section == SignalTreeModel::HistoryColumn) {
+      historyColumnManuallySized = false;
+      updateColumnWidths();
+    }
+  });
 
   QVBoxLayout* main_layout = new QVBoxLayout(this);
   main_layout->setContentsMargins(0, 0, 0, 0);
@@ -89,6 +110,16 @@ void SignalEditor::setupConnections(ChartsPanel* charts) {
   connect(GetDBC(), &dbc::Manager::signalAdded, this, &SignalEditor::handleSignalAdded);
   connect(GetDBC(), &dbc::Manager::signalUpdated, this, &SignalEditor::handleSignalUpdated);
   connect(tree, &SignalTree::highlightRequested, this, &SignalEditor::highlight);
+  auto* value_table_shortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_V), tree);
+  value_table_shortcut->setAutoRepeat(false);
+  connect(value_table_shortcut, &QShortcut::activated, this, [this] {
+    const QPoint pos = tree->viewport()->mapFromGlobal(QCursor::pos());
+    if (!tree->viewport()->rect().contains(pos)) return;
+    const QModelIndex hovered = tree->indexAt(pos);
+    if (hovered.isValid()) {
+      delegate->openValueTable(tree, model->valueTableIndex(model->itemFromIndex(hovered)->sig));
+    }
+  });
   connect(tree->verticalScrollBar(), &QScrollBar::valueChanged, [this]() { updateState(); });
   connect(tree->verticalScrollBar(), &QScrollBar::rangeChanged, [this]() { updateState(); });
   connect(charts, &ChartsPanel::seriesChanged, model,
@@ -117,17 +148,15 @@ void SignalEditor::updateState(const std::set<MessageId>* msgs) {
   // Skip update if the widget is hidden or collapsed
   if (!isVisible() || height() == 0 || width() == 0) return;
 
-  const auto* last_msg = StreamManager::stream()->snapshot(model->messageId());
   if (model->rowCount() == 0 || (msgs && !msgs->count(model->messageId()))) return;
+  const auto* last_msg = StreamManager::stream()->snapshot(model->messageId());
 
   auto [first_v, last_v] = visibleSignalRange();
   if (!first_v.isValid()) return;
 
   model->updateValues(last_msg);
 
-  int fixed_parts = delegate->getButtonsWidth() + model->maxValueWidth() + (delegate->kPadding * 4);
-  int value_col_width = tree->columnWidth(1);
-  int spark_w = std::max(value_col_width - fixed_parts, value_col_width / 2);
+  int spark_w = tree->columnWidth(SignalTreeModel::HistoryColumn) - 2 * delegate->kPadding;
   model->updateSparklines(last_msg, first_v.row(), last_v.row(), QSize(spark_w, delegate->kBtnSize));
 }
 
@@ -191,27 +220,30 @@ std::pair<QModelIndex, QModelIndex> SignalEditor::visibleSignalRange() {
   return {first_visible, last_visible};
 }
 
-void SignalEditor::updateColumnWidths() {
+int SignalEditor::signalNameWidth() const {
   auto* m = GetDBC()->msg(model->messageId());
-  if (!m) return;
-
-  const int limit = std::max(150, tree->viewport()->width() / 3);
-  int max_content_w = 0;
-  int indentation = tree->indentation();
-
-  for (const auto* sig : m->getSignals()) {
-    int w = delegate->nameColumnWidth(sig) + indentation;
-    max_content_w = std::max(max_content_w, w);
-    if (max_content_w > limit) break;  // No need to calculate further
+  int width = 150;
+  if (m) {
+    for (const auto* sig : m->getSignals()) {
+      width = std::max(width, delegate->nameColumnWidth(sig) + tree->indentation());
+    }
   }
+  return width;
+}
 
-  int finalWidth = std::clamp(max_content_w, 150, limit);
-
-  // Block signals to prevent resizeEvent recursion
-  tree->header()->blockSignals(true);
-  tree->setColumnWidth(0, finalWidth);
-  tree->header()->blockSignals(false);
-
+void SignalEditor::updateColumnWidths() {
+  const QSignalBlocker blocker(tree->header());
+  const auto* scrollbar = tree->verticalScrollBar();
+  const int available_width = width() - (scrollbar->isVisible() ? scrollbar->width() : 0);
+  if (!nameColumnManuallySized && GetDBC()->msg(model->messageId())) {
+    const int limit = std::max(150, available_width / 2);
+    tree->setColumnWidth(SignalTreeModel::NameColumn, std::min(signalNameWidth(), limit));
+  }
+  if (!historyColumnManuallySized) {
+    const int remaining_width = available_width - tree->columnWidth(SignalTreeModel::NameColumn);
+    tree->setColumnWidth(SignalTreeModel::HistoryColumn,
+                         std::max(tree->header()->minimumSectionSize(), remaining_width / 3));
+  }
   updateState();
 }
 

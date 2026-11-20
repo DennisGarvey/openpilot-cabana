@@ -39,6 +39,7 @@ class SignalEditor : public QFrame {
   void handleSignalAdded(MessageId id, const dbc::Signal* sig);
   void handleSignalUpdated(const dbc::Signal* sig);
   void updateColumnWidths();
+  int signalNameWidth() const;
   std::pair<QModelIndex, QModelIndex> visibleSignalRange();
 
   SignalTree* tree;
@@ -48,4 +49,6 @@ class SignalEditor : public QFrame {
   QLabel* signal_count_lb;
   SignalTreeDelegate* delegate;
   ToolButton* collapse_btn;
+  bool nameColumnManuallySized = false;
+  bool historyColumnManuallySized = false;
 };

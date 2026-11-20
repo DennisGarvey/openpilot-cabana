@@ -20,7 +20,6 @@ SignalTreeDelegate::SignalTreeDelegate(QObject* parent) : QStyledItemDelegate(pa
   signal_text_color = utils::isDarkTheme() ? QColor(20, 20, 20) : QColor(255, 255, 255);
 
   label_font.setPointSize(8);
-  minmax_font.setPixelSize(10);
   value_font = qApp->font();
 }
 
@@ -43,10 +42,14 @@ void SignalTreeDelegate::paint(QPainter* painter, const QStyleOptionViewItem& op
 
   QRect rect = option.rect.adjusted(kPadding, 0, -kPadding, 0);
 
-  if (index.column() == 0) {
+  if (index.column() == SignalTreeModel::NameColumn) {
     drawNameColumn(painter, rect, option, item, index);
+  } else if (index.column() == SignalTreeModel::HistoryColumn) {
+    if (item->type == SignalTreeModel::Item::Sig) {
+      drawHistoryColumn(painter, rect, option.state & QStyle::State_Selected, item);
+    }
   } else if (item->type == SignalTreeModel::Item::Sig) {
-    drawDataColumn(painter, rect, option, item, index);
+    drawValueColumn(painter, rect, option, item, index);
   } else {
     QStyledItemDelegate::paint(painter, option, index);
   }
@@ -97,53 +100,40 @@ void SignalTreeDelegate::drawNameColumn(QPainter* p, QRect r, const QStyleOption
   p->drawText(r, Qt::AlignVCenter | Qt::AlignLeft, elidedText);
 }
 
-void SignalTreeDelegate::drawDataColumn(QPainter* p, QRect r, const QStyleOptionViewItem& opt,
-                                        SignalTreeModel::Item* item, const QModelIndex& idx) const {
-  const bool sel = opt.state & QStyle::State_Selected;
-  const bool show_details = (hoverIndex == idx) && !item->sparkline->isEmpty();
-  const QColor text_c = opt.palette.color(sel ? QPalette::HighlightedText : QPalette::Text);
-
-  // Sparkline
-  int sparkW = 0;
-  if (!item->sparkline->image().isNull()) {
-    const QImage& img = item->sparkline->image();
-    const qreal dpr = img.devicePixelRatio();
-    sparkW = img.width() / dpr;
-    item->sparkline->setHighlight(sel);
-    p->drawImage(r.left(), r.top() + (r.height() - img.height() / dpr) / 2, img);
+void SignalTreeDelegate::drawHistoryColumn(QPainter* p, const QRect& rect, bool selected,
+                                           SignalTreeModel::Item* item) const {
+  item->sparkline->setHighlight(selected);
+  const QImage& image = item->sparkline->image();
+  if (!image.isNull()) {
+    p->save();
+    p->setClipRect(rect, Qt::IntersectClip);
+    p->drawImage(rect.left(), rect.top() + (rect.height() - image.deviceIndependentSize().height()) / 2, image);
+    p->restore();
   }
+}
 
-  // Details (Min/Max)
-  int detailsW = 0;
-  int anchorX = r.left() + sparkW;
-  if (show_details) {
-    p->setFont(minmax_font);
-    QString maxS = utils::doubleToString(item->sparkline->maxVal(), item->sig->precision);
-    QString minS = utils::doubleToString(item->sparkline->minVal(), item->sig->precision);
-    detailsW = std::max(p->fontMetrics().horizontalAdvance(maxS), p->fontMetrics().horizontalAdvance(minS)) + kPadding;
-
-    p->setPen(sel ? text_c : opt.palette.mid().color());
-    p->drawLine(anchorX, r.top() + 2, anchorX, r.bottom() - 2);
-
-    p->setPen(sel ? text_c : opt.palette.placeholderText().color());
-    QRect dRect(anchorX + kPadding, r.top(), detailsW, r.height());
-    p->drawText(dRect, Qt::AlignTop, maxS);
-    p->drawText(dRect, Qt::AlignBottom, minS);
-  }
-
-  // Value + Buttons
-  QRect valR = r;
-  valR.setLeft(anchorX + detailsW + kPadding);
-  valR.setRight(r.right() - getButtonsWidth() - kPadding);
-
+void SignalTreeDelegate::drawValueColumn(QPainter* p, QRect rect, const QStyleOptionViewItem& opt,
+                                         SignalTreeModel::Item* item, const QModelIndex& idx) const {
+  rect.setRight(getButtonRect(opt.rect, PlotButton).left() - kPadding);
   p->setFont(value_font);
-  p->setPen(text_c);
-  QString displayText = (item->value_width <= valR.width())
-                            ? item->sig_val
-                            : p->fontMetrics().elidedText(item->sig_val, Qt::ElideRight, valR.width());
-  p->drawText(valR, Qt::AlignRight | Qt::AlignVCenter, displayText);
-
+  p->setPen(opt.palette.color((opt.state & QStyle::State_Selected) ? QPalette::HighlightedText : QPalette::Text));
+  if (rect.width() > 0) {
+    const QString text = p->fontMetrics().elidedText(item->sig_val, Qt::ElideRight, rect.width());
+    p->drawText(rect, Qt::AlignRight | Qt::AlignVCenter, text);
+  }
   drawButtons(p, opt, item, idx);
+}
+
+void SignalTreeDelegate::openValueTable(QWidget* parent, const QModelIndex& index) const {
+  if (!index.isValid()) return;
+  QPersistentModelIndex target(index);
+  auto* item = static_cast<SignalTreeModel::Item*>(index.internalPointer());
+  ValueTableEditor dialog(item->sig->value_table, parent);
+  dialog.setWindowTitle(item->sig->name);
+  if (dialog.exec() == QDialog::Accepted && target.isValid()) {
+    auto* model = const_cast<QAbstractItemModel*>(target.model());
+    model->setData(target, QVariant::fromValue(dialog.value_table));
+  }
 }
 
 QWidget* SignalTreeDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem& option,
@@ -152,9 +142,7 @@ QWidget* SignalTreeDelegate::createEditor(QWidget* parent, const QStyleOptionVie
   using T = SignalTreeModel::Item::Type;
 
   if (item->type == T::ValueTable) {
-    ValueTableEditor dlg(item->sig->value_table, parent);
-    dlg.setWindowTitle(item->sig->name);
-    if (dlg.exec()) const_cast<QAbstractItemModel*>(idx.model())->setData(idx, QVariant::fromValue(dlg.value_table));
+    openValueTable(parent, idx);
     return nullptr;
   }
 
@@ -263,7 +251,17 @@ void SignalTreeDelegate::drawButtons(QPainter* p, const QStyleOptionViewItem& op
 bool SignalTreeDelegate::helpEvent(QHelpEvent* event, QAbstractItemView* view, const QStyleOptionViewItem& option,
                                    const QModelIndex& index) {
   auto item = static_cast<SignalTreeModel::Item*>(index.internalPointer());
-  if (index.column() != 1 || !item || item->type != SignalTreeModel::Item::Sig) {
+  if (!item || item->type != SignalTreeModel::Item::Sig) {
+    return QStyledItemDelegate::helpEvent(event, view, option, index);
+  }
+  if (index.column() == SignalTreeModel::HistoryColumn && !item->sparkline->isEmpty()) {
+    const QString tooltip = tr("Session Min: %1\nSession Max: %2")
+                                .arg(QString::number(item->sparkline->minVal(), 'f', 3),
+                                     QString::number(item->sparkline->maxVal(), 'f', 3));
+    QToolTip::showText(event->globalPos(), tooltip, view);
+    return true;
+  }
+  if (index.column() != SignalTreeModel::ValueColumn) {
     return QStyledItemDelegate::helpEvent(event, view, option, index);
   }
 
@@ -280,23 +278,6 @@ bool SignalTreeDelegate::helpEvent(QHelpEvent* event, QAbstractItemView* view, c
     return true;
   }
 
-  // Value & Sparkline Area Hit-Testing
-  if (!item->sparkline->isEmpty()) {
-    int sparkW = item->sparkline->image().width() / item->sparkline->image().devicePixelRatio();
-    QRect value_rect = option.rect;
-    value_rect.setLeft(option.rect.left() + sparkW + kPadding * 2);
-    value_rect.setRight(option.rect.right() - getButtonsWidth());
-
-    if (value_rect.contains(event->pos())) {
-      QString tooltip = item->sig_val + "\n" +
-                        tr("Session Min: %1\nSession Max: %2")
-                            .arg(QString::number(item->sparkline->minVal(), 'f', 3),
-                                 QString::number(item->sparkline->maxVal(), 'f', 3));
-      QToolTip::showText(event->globalPos(), tooltip, view);
-      return true;
-    }
-  }
-
   return QStyledItemDelegate::helpEvent(event, view, option, index);
 }
 
@@ -304,7 +285,7 @@ bool SignalTreeDelegate::editorEvent(QEvent* event, QAbstractItemModel* model, c
                                      const QModelIndex& idx) {
   auto item = static_cast<SignalTreeModel::Item*>(idx.internalPointer());
 
-  if (!item || idx.column() != 1 || item->type != SignalTreeModel::Item::Sig) {
+  if (!item || idx.column() != SignalTreeModel::ValueColumn || item->type != SignalTreeModel::Item::Sig) {
     return QStyledItemDelegate::editorEvent(event, model, opt, idx);
   }
 

@@ -12,6 +12,8 @@ enum SignalRole { IsChartedRole = Qt::UserRole + 10 };
 class SignalTreeModel : public QAbstractItemModel {
   Q_OBJECT
  public:
+  enum Column { NameColumn, HistoryColumn, ValueColumn, ColumnCount };
+
   struct Item {
     enum Type {
       Root,
@@ -50,7 +52,6 @@ class SignalTreeModel : public QAbstractItemModel {
     QString title;
     bool highlight = false;
     QString sig_val = "-";
-    int value_width = 0;
     std::unique_ptr<Sparkline> sparkline;
   };
 
@@ -59,12 +60,12 @@ class SignalTreeModel : public QAbstractItemModel {
   inline const MessageId& messageId() const { return msg_id; }
   void highlightSignalRow(const dbc::Signal* sig);
   int rowCount(const QModelIndex& parent = QModelIndex()) const override;
-  int columnCount(const QModelIndex& parent = QModelIndex()) const override { return 2; }
+  int columnCount(const QModelIndex& parent = QModelIndex()) const override { return ColumnCount; }
+  QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
   QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
   QModelIndex index(int row, int column, const QModelIndex& parent = QModelIndex()) const override;
   QModelIndex parent(const QModelIndex& index) const override;
   Qt::ItemFlags flags(const QModelIndex& index) const override;
-  int maxValueWidth() const { return max_value_width; }
   bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
 
   void setMessage(const MessageId& id);
@@ -75,6 +76,7 @@ class SignalTreeModel : public QAbstractItemModel {
   bool saveSignal(const dbc::Signal* origin_s, dbc::Signal& s);
   Item* itemFromIndex(const QModelIndex& index) const;
   int signalRow(const dbc::Signal* sig) const;
+  QModelIndex valueTableIndex(const dbc::Signal* sig);
   void updateChartedSignals(const QMap<MessageId, QSet<const dbc::Signal*>>& opened);
   void fetchMore(const QModelIndex& parent) override;
   bool canFetchMore(const QModelIndex& parent) const override;
@@ -90,9 +92,6 @@ class SignalTreeModel : public QAbstractItemModel {
 
   MessageId msg_id;
   QString filter_str;
-
-  QFont value_font;
-  int max_value_width = 0;
 
   QMap<MessageId, QSet<const dbc::Signal*>> charted_signals_;
   std::unique_ptr<Item> root;
