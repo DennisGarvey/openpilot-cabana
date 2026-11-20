@@ -111,16 +111,17 @@ void LiveStream::drainQueue() {
 }
 
 void LiveStream::advancePlayback() {
-  // Initialize anchor on the first frame with data
-  if (anchor_wall_ns_ == 0) {
-    cursor_ns_ = all_events_.back()->mono_ns;
+  if (paused_) return;
+
+  const bool first_batch = anchor_wall_ns_ == 0;
+  if (first_batch) {
+    cursor_ns_ = all_events_.front()->mono_ns;
     resetAnchor();
   }
 
-  if (paused_) return;
-
   const uint64_t target = playbackTarget();
-  auto first = std::ranges::upper_bound(all_events_, cursor_ns_, {}, &CanEvent::mono_ns);
+  auto first = first_batch ? all_events_.begin()
+                           : std::ranges::upper_bound(all_events_, cursor_ns_, {}, &CanEvent::mono_ns);
   auto last = std::ranges::upper_bound(first, all_events_.end(), target, {}, &CanEvent::mono_ns);
 
   for (auto it = first; it != last; ++it) {

@@ -20,7 +20,7 @@ class MessageList : public QWidget {
   QByteArray saveHeaderState() const { return table_->header()->saveState(); }
   bool restoreHeaderState(const QByteArray& state) const { return table_->header()->restoreState(state); }
   void suppressHighlighted(bool suppress);
-  void selectMessage(const MessageId& message_id) { selectMessageForced(message_id, false); }
+  void selectMessage(const MessageId& message_id);
 
  signals:
   void msgSelectionChanged(const MessageId& message_id);
@@ -33,7 +33,8 @@ class MessageList : public QWidget {
   // State management
   void resetState();
   void updateTitle();
-  void selectMessageForced(const MessageId& msg_id, bool force);
+  void saveViewport();
+  void restoreViewport();
   // Event handlers
   void onCurrentChanged(const QModelIndex& current);
   void onHeaderContextMenuRequested(const QPoint& pos);
@@ -45,6 +46,10 @@ class MessageList : public QWidget {
   MessageHeader* header_;
   MessageDelegate* delegate_;
   std::optional<MessageId> current_msg_id_;
+  std::optional<MessageId> top_msg_id_;
+  int vertical_scroll_ = 0;
+  int horizontal_scroll_ = 0;
+  int top_offset_ = 0;
   // Toolbar widgets
   ToolButton* mute_active_btn_;
   ToolButton* unmute_all_btn_;

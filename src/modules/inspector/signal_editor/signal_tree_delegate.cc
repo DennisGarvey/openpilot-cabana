@@ -124,12 +124,12 @@ void SignalTreeDelegate::drawValueColumn(QPainter* p, QRect rect, const QStyleOp
   drawButtons(p, opt, item, idx);
 }
 
-void SignalTreeDelegate::openValueTable(QWidget* parent, const QModelIndex& index) const {
+void SignalTreeDelegate::openValueTable(QWidget* parent, const QModelIndex& index, bool show_extra_info) const {
   if (!index.isValid()) return;
   QPersistentModelIndex target(index);
   auto* item = static_cast<SignalTreeModel::Item*>(index.internalPointer());
-  ValueTableEditor dialog(item->sig->value_table, parent);
-  dialog.setWindowTitle(item->sig->name);
+  ValueTableEditor dialog(item->sig->value_table, parent, show_extra_info ? item->sig : nullptr);
+  dialog.setWindowTitle(show_extra_info ? tr("Extra Info — %1").arg(item->sig->name) : item->sig->name);
   if (dialog.exec() == QDialog::Accepted && target.isValid()) {
     auto* model = const_cast<QAbstractItemModel*>(target.model());
     model->setData(target, QVariant::fromValue(dialog.value_table));

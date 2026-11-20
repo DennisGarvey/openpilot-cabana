@@ -48,7 +48,9 @@ MainWindow::MainWindow(AbstractStream* stream, const QString& dbc_file) : QMainW
 
   setupConnections();
 
-  QTimer::singleShot(0, this, [=]() { stream ? openStream(stream, dbc_file) : selectAndOpenStream(); });
+  QTimer::singleShot(0, this, [this, stream, dbc_file]() {
+    stream ? openStream(stream, dbc_file) : selectAndOpenStream(dbc_file);
+  });
   show();
 }
 
@@ -79,7 +81,7 @@ void MainWindow::setupMenus() {
 
 void MainWindow::createFileMenu() {
   QMenu* file_menu = menuBar()->addMenu(tr("&File"));
-  file_menu->addAction(tr("Open Stream..."), this, &MainWindow::selectAndOpenStream);
+  file_menu->addAction(tr("Open Stream..."), this, [this]() { selectAndOpenStream(); });
   close_stream_act_ = file_menu->addAction(tr("Close stream"), this, &MainWindow::closeStream);
   export_to_csv_act_ = file_menu->addAction(tr("Export to CSV..."), this, &MainWindow::exportToCSV);
   close_stream_act_->setEnabled(false);
@@ -246,10 +248,12 @@ void MainWindow::DBCFileChanged() {
   QTimer::singleShot(20, this, &::MainWindow::restoreSessionState);
 }
 
-void MainWindow::selectAndOpenStream() {
-  StreamSelector dlg(this);
+void MainWindow::selectAndOpenStream(const QString& dbc_file) {
+  StreamSelector dlg(this, dbc_file);
   if (dlg.exec()) {
     openStream(dlg.stream(), dlg.dbcFile());
+  } else {
+    dbc_controller_->loadFile(dbc_file);
   }
 }
 
@@ -310,8 +314,8 @@ void MainWindow::createLoadingDialog(bool is_live) {
     const QString ip = device_stream->zmqAddress();
     auto* wait_dlg = new ZmqLoadDialog(ip, this);
     wait_dlg->setAttribute(Qt::WA_DeleteOnClose);
-    connect(wait_dlg, &QDialog::rejected, this, &MainWindow::close);
-    connect(&StreamManager::instance(), &StreamManager::eventsMerged, wait_dlg, &QDialog::accept);
+    connect(wait_dlg, &QDialog::rejected, this, &MainWindow::closeStream);
+    connect(stream, &AbstractStream::eventsMerged, wait_dlg, &QDialog::accept);
     wait_dlg->show();
     return;
   }
@@ -323,8 +327,11 @@ void MainWindow::createLoadingDialog(bool is_live) {
   wait_dlg->setAttribute(Qt::WA_DeleteOnClose);
   wait_dlg->setFixedSize(400, wait_dlg->sizeHint().height());
 
-  connect(wait_dlg, &QProgressDialog::canceled, this, &MainWindow::close);
-  connect(&StreamManager::instance(), &StreamManager::eventsMerged, wait_dlg, &QProgressDialog::accept);
+  connect(wait_dlg, &QProgressDialog::canceled, this, [this, wait_dlg]() {
+    wait_dlg->deleteLater();
+    closeStream();
+  });
+  connect(stream, &AbstractStream::eventsMerged, wait_dlg, &QProgressDialog::accept);
   connect(&SystemRelay::instance(), &SystemRelay::downloadProgress, wait_dlg,
           [wait_dlg](uint64_t cur, uint64_t total, bool success) {
             Q_UNUSED(success);

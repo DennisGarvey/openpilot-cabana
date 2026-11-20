@@ -1,22 +1,48 @@
 #include "value_table_editor.h"
 
 #include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QIntValidator>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QShortcut>
 #include <QTableWidgetItem>
 
 #include "utils/util.h"
 
-ValueTableEditor::ValueTableEditor(const ValueTable& descriptions, QWidget* parent) : QDialog(parent) {
+ValueTableEditor::ValueTableEditor(const ValueTable& descriptions, QWidget* parent, const dbc::Signal* extra_info)
+    : QDialog(parent) {
   setWindowTitle(tr("Value Table Editor"));
   setMinimumSize(500, 400);
 
   QVBoxLayout* main_layout = new QVBoxLayout(this);
+  if (extra_info) {
+    setMinimumSize(600, 480);
+    auto* details = new QFormLayout;
+    const auto addDetail = [details](const QString& title, const QString& value) {
+      auto* label = new QLabel;
+      label->setTextFormat(Qt::PlainText);
+      label->setText(value.isEmpty() ? QStringLiteral("—") : value);
+      label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+      details->addRow(title, label);
+    };
+    addDetail(tr("Unit"), extra_info->unit);
+    addDetail(tr("Minimum"), utils::doubleToString(extra_info->min));
+    addDetail(tr("Maximum"), utils::doubleToString(extra_info->max));
+    auto* comment = new QPlainTextEdit;
+    comment->setReadOnly(true);
+    comment->setPlainText(extra_info->comment);
+    comment->setPlaceholderText(tr("No comment"));
+    comment->setFixedHeight(comment->fontMetrics().lineSpacing() * 3 + 12);
+    details->addRow(tr("Comment"), comment);
+    main_layout->addLayout(details);
+    main_layout->addWidget(new QLabel(tr("Value Table")));
+  }
 
   // Toolbar
   QHBoxLayout* toolbar_layout = new QHBoxLayout();

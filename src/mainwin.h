@@ -26,7 +26,7 @@ class MainWindow : public QMainWindow {
   ChartsPanel* charts_panel = nullptr;
 
  public slots:
-  void selectAndOpenStream();
+  void selectAndOpenStream(const QString& dbc_file = {});
   void openStream(AbstractStream* stream, const QString& dbc_file = {});
   void closeStream();
   void exportToCSV();

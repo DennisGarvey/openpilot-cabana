@@ -49,6 +49,10 @@ class Settings : public QObject {
   QStringList last_candump_files;
   QStringList last_trc_files;
   QString last_panda_serial;
+  bool last_panda_udp = false;
+  QString last_panda_udp_host;
+  int last_panda_udp_port = 1338;
+  int last_panda_udp_local_port = 0;
   QString last_socketcan_device;
   QString last_device_ip;
   int last_device_type = 1; // Default to ZMQ (1)

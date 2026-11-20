@@ -231,8 +231,10 @@ void DbcController::remindSaveChanges() {
 }
 
 void DbcController::updateRecentFiles(const QString& fn) {
+  const QString path = QFileInfo(fn).absoluteFilePath();
   settings.recent_files.removeAll(fn);
-  settings.recent_files.prepend(fn);
+  settings.recent_files.removeAll(path);
+  settings.recent_files.prepend(path);
   while (settings.recent_files.size() > MAX_RECENT_FILES) {
     settings.recent_files.removeLast();
   }

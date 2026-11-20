@@ -10,7 +10,7 @@ class QPushButton;
 
 class ValueTableEditor : public QDialog {
  public:
-  ValueTableEditor(const ValueTable& descriptions, QWidget* parent);
+  ValueTableEditor(const ValueTable& descriptions, QWidget* parent, const dbc::Signal* extra_info = nullptr);
   ValueTable value_table;
 
  private:

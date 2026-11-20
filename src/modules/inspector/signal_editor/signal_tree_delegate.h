@@ -20,7 +20,7 @@ class SignalTreeDelegate : public QStyledItemDelegate {
 
   SignalTreeDelegate(QObject* parent);
   void clearHoverState();
-  void openValueTable(QWidget* parent, const QModelIndex& index) const;
+  void openValueTable(QWidget* parent, const QModelIndex& index, bool show_extra_info = false) const;
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override;
   QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override;
   QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& idx) const override;

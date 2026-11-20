@@ -1,8 +1,11 @@
 #include "stream_selector.h"
 
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QVBoxLayout>
 
 #include "modules/settings/settings.h"
 #include "asc_log.h"
@@ -13,7 +16,8 @@
 #include "socketcan.h"
 #include "trc_log.h"
 
-StreamSelector::StreamSelector(QWidget* parent) : QDialog(parent) {
+StreamSelector::StreamSelector(QWidget* parent, const QString& initial_dbc)
+    : QDialog(parent), dbc_file_overridden_(!initial_dbc.isEmpty()) {
   setWindowTitle(tr("Open stream"));
   setMinimumWidth(620);
   QVBoxLayout* layout = new QVBoxLayout(this);
@@ -25,10 +29,21 @@ StreamSelector::StreamSelector(QWidget* parent) : QDialog(parent) {
   dbc_file = new QLineEdit(this);
   dbc_file->setReadOnly(true);
   dbc_file->setPlaceholderText(tr("Choose a dbc file to open"));
+  dbc_file->setText(initial_dbc);
   QPushButton* browse_btn = new QPushButton(tr("Browse..."));
+  QPushButton* clear_btn = new QPushButton(tr("Clear"));
+  clear_btn->setEnabled(!initial_dbc.isEmpty());
   dbc_layout->addWidget(new QLabel(tr("dbc File")));
   dbc_layout->addWidget(dbc_file);
   dbc_layout->addWidget(browse_btn);
+  dbc_layout->addWidget(clear_btn);
+  connect(dbc_file, &QLineEdit::textChanged, clear_btn, [clear_btn](const QString& text) {
+    clear_btn->setEnabled(!text.isEmpty());
+  });
+  connect(clear_btn, &QPushButton::clicked, this, [this] {
+    dbc_file_overridden_ = true;
+    dbc_file->clear();
+  });
   layout->addLayout(dbc_layout);
 
   QFrame* line = new QFrame(this);
@@ -46,7 +61,8 @@ StreamSelector::StreamSelector(QWidget* parent) : QDialog(parent) {
   });
 
   addStreamWidget(new RouteWidget, tr("&Route"));
-  addStreamWidget(new AscLogWidget, tr("&ASC Log"));
+  auto* asc_log = new AscLogWidget;
+  addStreamWidget(asc_log, tr("&ASC Log"));
   addStreamWidget(new CandumpLogWidget, tr("&candump"));
   addStreamWidget(new TrcLogWidget, tr("&TRC"));
   addStreamWidget(new PandaWidget, tr("&Panda"));
@@ -58,6 +74,22 @@ StreamSelector::StreamSelector(QWidget* parent) : QDialog(parent) {
   if (settings.last_stream_option >= 0 && settings.last_stream_option < tab->count()) {
     tab->setCurrentIndex(settings.last_stream_option);
   }
+
+  const auto updateRememberedDbc = [this, asc_log] {
+    if (dbc_file_overridden_) return;
+    if (tab->currentWidget() == asc_log) {
+      for (const QString& path : settings.recent_files) {
+        const QFileInfo file(path);
+        if (file.isFile() && file.isReadable()) {
+          dbc_file->setText(file.absoluteFilePath());
+          return;
+        }
+      }
+    }
+    dbc_file->clear();
+  };
+  connect(tab, &QTabWidget::currentChanged, this, updateRememberedDbc);
+  updateRememberedDbc();
 
   connect(btn_box, &QDialogButtonBox::rejected, this, &QDialog::reject);
   connect(btn_box, &QDialogButtonBox::accepted, [=]() {
@@ -71,6 +103,7 @@ StreamSelector::StreamSelector(QWidget* parent) : QDialog(parent) {
   connect(browse_btn, &QPushButton::clicked, [this]() {
     QString fn = QFileDialog::getOpenFileName(this, tr("Open File"), settings.last_dir, "DBC (*.dbc)");
     if (!fn.isEmpty()) {
+      dbc_file_overridden_ = true;
       dbc_file->setText(fn);
       settings.last_dir = QFileInfo(fn).absolutePath();
     }

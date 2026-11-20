@@ -110,14 +110,17 @@ void SignalEditor::setupConnections(ChartsPanel* charts) {
   connect(GetDBC(), &dbc::Manager::signalAdded, this, &SignalEditor::handleSignalAdded);
   connect(GetDBC(), &dbc::Manager::signalUpdated, this, &SignalEditor::handleSignalUpdated);
   connect(tree, &SignalTree::highlightRequested, this, &SignalEditor::highlight);
-  auto* value_table_shortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_V), tree);
-  value_table_shortcut->setAutoRepeat(false);
-  connect(value_table_shortcut, &QShortcut::activated, this, [this] {
+  auto* extra_info_shortcut = new QShortcut(QKeySequence(Qt::Key_V), tree);
+  extra_info_shortcut->setAutoRepeat(false);
+  extra_info_shortcut->setEnabled(false);
+  connect(tree, &SignalTree::highlightRequested, extra_info_shortcut,
+          [extra_info_shortcut](const dbc::Signal* sig) { extra_info_shortcut->setEnabled(sig != nullptr); });
+  connect(extra_info_shortcut, &QShortcut::activated, this, [this] {
     const QPoint pos = tree->viewport()->mapFromGlobal(QCursor::pos());
     if (!tree->viewport()->rect().contains(pos)) return;
     const QModelIndex hovered = tree->indexAt(pos);
     if (hovered.isValid()) {
-      delegate->openValueTable(tree, model->valueTableIndex(model->itemFromIndex(hovered)->sig));
+      delegate->openValueTable(tree, model->valueTableIndex(model->itemFromIndex(hovered)->sig), true);
     }
   });
   connect(tree->verticalScrollBar(), &QScrollBar::valueChanged, [this]() { updateState(); });

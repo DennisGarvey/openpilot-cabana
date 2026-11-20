@@ -24,6 +24,8 @@ MessageList::MessageList(QWidget* parent) : QWidget(parent) {
   menu_ = new QMenu(this);
 
   table_->setItemDelegate(delegate_);
+  // Save the visible row before the view clears its item layout on a reset.
+  connect(model_, &MessageModel::modelAboutToBeReset, this, &MessageList::saveViewport);
   table_->setModel(model_);  // Set model before configuring header sections
   table_->setHeader(header_);
 
@@ -106,9 +108,7 @@ void MessageList::setupConnections() {
   connect(UndoStack::instance(), &QUndoStack::indexChanged, model_, &MessageModel::rebuild);
   connect(table_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MessageList::onCurrentChanged);
   connect(model_, &MessageModel::modelReset, this, [this]() {
-    if (current_msg_id_) {
-      selectMessageForced(*current_msg_id_, true);
-    }
+    restoreViewport();
     updateTitle();
   });
 }
@@ -124,8 +124,8 @@ void MessageList::suppressHighlighted(bool suppress) {
   unmute_all_btn_->setEnabled(n > 0);
 }
 
-void MessageList::selectMessageForced(const MessageId& msg_id, bool force) {
-  if (!force && current_msg_id_ && *current_msg_id_ == msg_id) return;
+void MessageList::selectMessage(const MessageId& msg_id) {
+  if (current_msg_id_ && *current_msg_id_ == msg_id) return;
 
   int row = model_->getRowForMessageId(msg_id);
   if (row != -1) {
@@ -133,6 +133,40 @@ void MessageList::selectMessageForced(const MessageId& msg_id, bool force) {
     table_->setCurrentIndex(index);
     table_->scrollTo(index, QAbstractItemView::PositionAtCenter);
   }
+}
+
+void MessageList::saveViewport() {
+  const auto* vertical_bar = table_->verticalScrollBar();
+  vertical_scroll_ = vertical_bar->value();
+  horizontal_scroll_ = table_->horizontalScrollBar()->value();
+  top_msg_id_.reset();
+  if (vertical_scroll_ == vertical_bar->minimum()) return;
+
+  const auto index = table_->indexAt(QPoint(0, 0));
+  if (const auto* item = model_->getItem(index)) {
+    top_msg_id_ = item->id;
+    top_offset_ = table_->visualRect(index).top();
+  }
+}
+
+void MessageList::restoreViewport() {
+  if (current_msg_id_) {
+    const int row = model_->getRowForMessageId(*current_msg_id_);
+    if (row >= 0) table_->setCurrentIndex(model_->index(row, 0));
+  }
+
+  table_->doItemsLayout();
+  auto* vertical_bar = table_->verticalScrollBar();
+  const int top_row = top_msg_id_ ? model_->getRowForMessageId(*top_msg_id_) : -1;
+  if (top_row >= 0) {
+    table_->scrollTo(model_->index(top_row, 0), QAbstractItemView::PositionAtTop);
+    if (table_->verticalScrollMode() == QAbstractItemView::ScrollPerPixel) {
+      vertical_bar->setValue(vertical_bar->value() - top_offset_);
+    }
+  } else {
+    vertical_bar->setValue(vertical_scroll_);
+  }
+  table_->horizontalScrollBar()->setValue(horizontal_scroll_);
 }
 
 void MessageList::resetState() {

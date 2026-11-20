@@ -1,10 +1,14 @@
 #pragma once
 
 #include <QComboBox>
-#include <QFormLayout>
+#include <QLineEdit>
 
 #include "abstract.h"
 #include "core/streams/panda_stream.h"
+
+class QCheckBox;
+class QStackedWidget;
+class QTabBar;
 
 class PandaWidget : public AbstractStreamWidget {
   Q_OBJECT
@@ -15,9 +19,15 @@ class PandaWidget : public AbstractStreamWidget {
 
  private:
   void refreshSerials();
-  void buildConfigForm();
+  void updateSerialConfig();
 
-  QComboBox* serial_edit;
-  QFormLayout* form_layout;
+  QTabBar* transport = nullptr;
+  QComboBox* serial_edit = nullptr;
+  QStackedWidget* serial_options = nullptr;
+  std::vector<QWidget*> fd_controls;
+  QLineEdit* udp_host = nullptr;
+  QLineEdit* udp_port = nullptr;
+  QLineEdit* udp_local_port = nullptr;
+  QCheckBox* fixed_receive_port = nullptr;
   PandaStreamConfig config = {};
 };

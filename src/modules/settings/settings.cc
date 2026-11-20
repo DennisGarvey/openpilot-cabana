@@ -41,6 +41,10 @@ void settings_op(SettingOperation op) {
   op(s, "last_candump_files", settings.last_candump_files);
   op(s, "last_trc_files", settings.last_trc_files);
   op(s, "last_panda_serial", settings.last_panda_serial);
+  op(s, "last_panda_udp", settings.last_panda_udp);
+  op(s, "last_panda_udp_host", settings.last_panda_udp_host);
+  op(s, "last_panda_udp_port", settings.last_panda_udp_port);
+  op(s, "last_panda_udp_local_port", settings.last_panda_udp_local_port);
   op(s, "last_socketcan_device", settings.last_socketcan_device);
   op(s, "last_device_ip", settings.last_device_ip);
   op(s, "last_device_type", settings.last_device_type);
