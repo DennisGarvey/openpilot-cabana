@@ -15,19 +15,10 @@
 #include "widgets/validators.h"
 
 namespace {
-std::optional<double> currentRawValue(const dbc::Signal& signal, const MessageSnapshot& snapshot) {
-  const auto fits = [&snapshot](const dbc::Signal& sig) {
-    return sig.size > 0 && sig.size <= 64 && sig.msb >= 0 && sig.lsb >= 0 &&
-           std::max(sig.msb, sig.lsb) / 8 < snapshot.size;
-  };
-  if (!fits(signal)) return std::nullopt;
-  if (const auto* mux = signal.multiplexor;
-      mux && (!fits(*mux) || mux->decodeRaw(snapshot.data.data(), snapshot.size) !=
-                                static_cast<uint64_t>(signal.multiplex_value))) {
-    return std::nullopt;
-  }
-
-  uint64_t raw = signal.decodeRaw(snapshot.data.data(), snapshot.size);
+std::optional<double> latestRawValue(const MessageId& id, const dbc::Signal& signal) {
+  const auto payload = latestSignalPayload(id, signal);
+  if (payload.empty()) return std::nullopt;
+  uint64_t raw = signal.decodeRaw(payload.data(), payload.size());
   if (!signal.is_signed) return static_cast<double>(raw);
   if (signal.size < 64 && (raw & (uint64_t{1} << (signal.size - 1)))) {
     raw |= ~uint64_t{0} << signal.size;
@@ -80,8 +71,14 @@ void SignalTreeDelegate::paint(QPainter* painter, const QStyleOptionViewItem& op
 
 void SignalTreeDelegate::drawNameColumn(QPainter* p, QRect r, const QStyleOptionViewItem& opt,
                                         SignalTreeModel::Item* item, const QModelIndex& idx) const {
+  if (idx.data(PinnedSignalRole).toBool()) {
+    const auto color = opt.palette.color((opt.state & QStyle::State_Selected) ? QPalette::HighlightedText : QPalette::Text);
+    p->drawPixmap(r.left(), r.center().y() - 6, utils::icon("pin", {12, 12}, color));
+    r.adjust(16, 0, 0, 0);
+  }
+
   if (item->type == SignalTreeModel::Item::Sig) {
-    // 1. Color Label / Row Number
+    // 1. Color Label / Signal Number
     QRect iconRect(r.left(), r.top() + (r.height() - kBtnSize) / 2, kColorLabelW, kBtnSize);
     p->setPen(Qt::NoPen);
     p->setBrush(item->sig->color);
@@ -89,7 +86,7 @@ void SignalTreeDelegate::drawNameColumn(QPainter* p, QRect r, const QStyleOption
 
     p->setFont(label_font);
     p->setPen(signal_text_color);
-    p->drawText(iconRect, Qt::AlignCenter, QString::number(item->row() + 1));
+    p->drawText(iconRect, Qt::AlignCenter, idx.data(SignalNumberRole).toString());
 
     r.setLeft(iconRect.right() + kPadding);
 
@@ -154,12 +151,11 @@ void SignalTreeDelegate::openValueTable(QWidget* parent, const QModelIndex& inde
   ValueTableEditor dialog(item->sig->value_table, parent, show_extra_info ? item->sig : nullptr);
   dialog.setWindowTitle(show_extra_info ? tr("Extra Info — %1").arg(item->sig->name) : item->sig->name);
   if (show_extra_info && !item->sig->value_table.empty()) {
-    const MessageId id = static_cast<const SignalTreeModel*>(index.model())->messageId();
+    const MessageId id = item->id;
     const auto updateHighlight = [&dialog, target, id](bool reveal) {
-      const auto* current_stream = StreamManager::stream();
-      if (!target.isValid() || !current_stream) return;
+      if (!target.isValid()) return;
       const auto* signal = static_cast<const SignalTreeModel::Item*>(target.internalPointer())->sig;
-      dialog.highlightCurrentValue(currentRawValue(*signal, *current_stream->snapshot(id)), reveal);
+      dialog.highlightCurrentValue(latestRawValue(id, *signal), reveal);
     };
     updateHighlight(true);
     connect(&StreamManager::instance(), &StreamManager::snapshotsUpdated, &dialog,
@@ -186,7 +182,7 @@ QWidget* SignalTreeDelegate::createEditor(QWidget* parent, const QStyleOptionVie
   if (item->type == T::SignalType) {
     auto* c = new QComboBox(parent);
     c->addItem(signalTypeToString(dbc::Signal::Type::Normal), static_cast<int>(dbc::Signal::Type::Normal));
-    auto* msg = GetDBC()->msg(static_cast<const SignalTreeModel*>(idx.model())->messageId());
+    auto* msg = GetDBC()->msg(item->id);
     if (!msg || !msg->multiplexor)
       c->addItem(signalTypeToString(dbc::Signal::Type::Multiplexor), static_cast<int>(dbc::Signal::Type::Multiplexor));
     else if (item->sig->type != dbc::Signal::Type::Multiplexor)
@@ -352,10 +348,10 @@ bool SignalTreeDelegate::editorEvent(QEvent* event, QAbstractItemModel* model, c
     if (type == QEvent::MouseButtonRelease) {
       if (btn == PlotButton) {
         bool isCharted = idx.data(IsChartedRole).toBool();
-        emit plotRequested(item->sig, !isCharted, mouseEvent->modifiers() & Qt::ShiftModifier);
+        emit plotRequested(item->id, item->sig, !isCharted, mouseEvent->modifiers() & Qt::ShiftModifier);
       } else if (btn == RemoveButton) {
         clearHoverState();    // Reset before model potentially deletes 'item'
-        emit removeRequested(item->sig);
+        emit removeRequested(item->id, item->sig);
       }
     }
     // Accept all mouse events on buttons to prevent row selection/expansion

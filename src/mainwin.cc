@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QDialog>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProgressDialog>
@@ -13,11 +14,14 @@
 #include <QVBoxLayout>
 #include <QWidgetAction>
 
+#include "core/streams/custom_usb_serial_stream.h"
 #include "core/streams/device_stream.h"
+#include "core/streams/file_stream.h"
 #include "core/commands/commands.h"
 #include "modules/dbc/dbc_controller.h"
 #include "modules/dbc/export.h"
 #include "modules/settings/settings_dialog.h"
+#include "modules/streams/custom_usb_serial.h"
 #include "modules/streams/stream_selector.h"
 #include "modules/streams/zmq_load_dialog.h"
 #include "modules/system/stream_manager.h"
@@ -25,6 +29,20 @@
 #include "replay/include/http.h"
 #include "tools/findsignal.h"
 #include "widgets/guide_overlay.h"
+
+static QStringList streamLayoutKey(const AbstractStream& stream) {
+  QStringList key{QString::fromLatin1(stream.metaObject()->className())};
+  if (const auto* files = dynamic_cast<const FileStream*>(&stream)) {
+    for (const auto& path : files->filePaths()) {
+      const QFileInfo file(path);
+      const auto canonical = file.canonicalFilePath();
+      key.append(canonical.isEmpty() ? file.absoluteFilePath() : canonical);
+    }
+  } else {
+    key.append(stream.routeName());
+  }
+  return key;
+}
 
 MainWindow::MainWindow(AbstractStream* stream, const QString& dbc_file, const std::map<int, QString>& bus_dbcs)
     : QMainWindow() {
@@ -66,6 +84,9 @@ void MainWindow::setupConnections() {
   connect(&relay, &SystemRelay::logMessage, status_bar_, &StatusBar::showMessage);
   connect(&relay, &SystemRelay::downloadProgress, status_bar_, &StatusBar::updateDownloadProgress);
   connect(&settings, &Settings::changed, status_bar_, &StatusBar::updateMetrics);
+  restore_session_timer_ = new QTimer(this);
+  restore_session_timer_->setSingleShot(true);
+  connect(restore_session_timer_, &QTimer::timeout, this, &MainWindow::restoreSessionState);
   connect(GetDBC(), &dbc::Manager::DBCFileChanged, this, &MainWindow::DBCFileChanged);
   connect(UndoStack::instance(), &QUndoStack::cleanChanged, this, &MainWindow::undoStackCleanChanged);
   connect(&StreamManager::instance(), &StreamManager::streamChanged, this, &MainWindow::onStreamChanged);
@@ -91,8 +112,12 @@ void MainWindow::setupMenus() {
 
 void MainWindow::createFileMenu() {
   QMenu* file_menu = menuBar()->addMenu(tr("&File"));
-  file_menu->addAction(tr("Open Stream..."), this, [this]() { selectAndOpenStream(); });
-  close_stream_act_ = file_menu->addAction(tr("Close stream"), this, &MainWindow::closeStream);
+  open_stream_act_ = file_menu->addAction(tr("Open Stream..."), this, [this] { selectAndOpenStream(); },
+                                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_O));
+  open_stream_act_->setAutoRepeat(false);
+  close_stream_act_ = file_menu->addAction(tr("Close stream"), this, &MainWindow::closeStream,
+                                           QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_W));
+  close_stream_act_->setAutoRepeat(false);
   export_to_csv_act_ = file_menu->addAction(tr("Export to CSV..."), this, &MainWindow::exportToCSV);
   close_stream_act_->setEnabled(false);
   export_to_csv_act_->setEnabled(false);
@@ -162,6 +187,15 @@ void MainWindow::createToolsMenu() {
   tools_menu_ = menuBar()->addMenu(tr("&Tools"));
   tools_menu_->addAction(tr("Find &Similar Bits"), this, &MainWindow::findSimilarBits);
   tools_menu_->addAction(tr("&Find Signal"), this, &MainWindow::findSignal);
+  auto* tx_action = tools_menu_->addAction(tr("Send Frame…"));
+  connect(tools_menu_, &QMenu::aboutToShow, this, [tx_action] {
+    tx_action->setVisible(dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream()) != nullptr);
+  });
+  connect(tx_action, &QAction::triggered, this, [this] {
+    if (auto* stream = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
+      CustomUsbSerialWidget::showSendFrameDialog(this, stream);
+    }
+  });
 }
 
 void MainWindow::createHelpMenu() {
@@ -237,6 +271,14 @@ void MainWindow::createShortcuts() {
 
 void MainWindow::onStreamChanged() {
   auto& manager = StreamManager::instance();
+  const bool has_stream = manager.hasStream();
+  restore_session_timer_->stop();
+  open_stream_act_->setEnabled(!has_stream);
+  close_stream_act_->setEnabled(has_stream);
+  export_to_csv_act_->setEnabled(has_stream);
+  tools_menu_->setEnabled(has_stream);
+  manage_dbcs_menu_->setEnabled(has_stream);
+  inspector_widget_->clear();
   if (auto* handle = video_splitter_->handle(1)) {
     handle->setEnabled(!manager.isLiveStream());
   }
@@ -283,23 +325,31 @@ void MainWindow::DBCFileChanged() {
   }
   setWindowFilePath(title.join(" | "));
 
-  QTimer::singleShot(20, this, &::MainWindow::restoreSessionState);
+  restore_session_timer_->start(20);
 }
 
 void MainWindow::selectAndOpenStream(const QString& dbc_file) {
+  auto& manager = StreamManager::instance();
+  if (manager.hasStream() || !open_stream_act_->isEnabled()) return;
+
+  open_stream_act_->setEnabled(false);
   StreamSelector dlg(this, dbc_file);
   if (dlg.exec()) {
     openStream(dlg.stream(), dlg.dbcFile());
   } else {
     dbc_controller_->loadFile(dbc_file);
   }
+  open_stream_act_->setEnabled(!manager.hasStream());
 }
 
 void MainWindow::closeStream() {
+  auto& manager = StreamManager::instance();
+  if (!manager.hasStream()) return;
+
+  auto [active_message, message_tabs] = inspector_widget_->getMessageView()->serializeMessageIds();
+  stream_layouts_.insert_or_assign(streamLayoutKey(*manager.currentStream()),
+                                   StreamLayout{active_message, message_tabs, charts_panel->saveLayout()});
   openStream(new DummyStream(this));
-  if (GetDBC()->nonEmptyFileCount() > 0) {
-    emit GetDBC()->DBCFileChanged();
-  }
   statusBar()->showMessage(tr("stream closed"));
 }
 
@@ -317,17 +367,15 @@ void MainWindow::exportToCSV() {
 
 void MainWindow::openStream(AbstractStream* stream, const QString& dbc_file) {
   auto& sm = StreamManager::instance();
+  if (sm.hasStream() && stream && !dynamic_cast<DummyStream*>(stream)) {
+    if (stream != sm.currentStream()) stream->deleteLater();
+    return;
+  }
   sm.setStream(stream, dbc_file);
-
-  inspector_widget_->clear();
   dbc_controller_->loadFile(dbc_file);
 
-  bool has_stream = sm.hasStream();
-  bool is_live_stream = sm.isLiveStream();
-
-  close_stream_act_->setEnabled(has_stream);
-  export_to_csv_act_->setEnabled(has_stream);
-  tools_menu_->setEnabled(has_stream);
+  const bool has_stream = sm.hasStream();
+  const bool is_live_stream = sm.isLiveStream();
 
   if (is_live_stream || video_splitter_->sizes()[0] == 0) {
     // display video at minimum size.
@@ -339,12 +387,22 @@ void MainWindow::openStream(AbstractStream* stream, const QString& dbc_file) {
   }
 
   if (has_stream) {
+    if (!stream_layouts_.empty()) restore_session_timer_->stop();
+    if (const auto it = stream_layouts_.find(streamLayoutKey(*stream)); it != stream_layouts_.end()) {
+      const auto& layout = it->second;
+      if (!layout.message_tabs.isEmpty()) {
+        inspector_widget_->getMessageView()->restoreTabs(layout.active_message, layout.message_tabs, true);
+        inspector_widget_->setMessage(MessageId::fromString(layout.active_message));
+      }
+      charts_panel->restoreLayout(layout.charts);
+    }
     createLoadingDialog(is_live_stream);
   }
 }
 
 void MainWindow::createLoadingDialog(bool is_live) {
   auto* stream = StreamManager::stream();
+  if (dynamic_cast<CustomUsbSerialStream*>(stream)) return;  // USB transmission can start before the first captured frame.
   auto* device_stream = dynamic_cast<DeviceStream*>(stream);
 
   if (is_live && device_stream) {
@@ -353,6 +411,7 @@ void MainWindow::createLoadingDialog(bool is_live) {
     wait_dlg->setAttribute(Qt::WA_DeleteOnClose);
     connect(wait_dlg, &QDialog::rejected, this, &MainWindow::closeStream);
     connect(stream, &AbstractStream::eventsMerged, wait_dlg, &QDialog::accept);
+    connect(&StreamManager::instance(), &StreamManager::streamChanged, wait_dlg, &QDialog::accept);
     wait_dlg->show();
     return;
   }
@@ -369,6 +428,7 @@ void MainWindow::createLoadingDialog(bool is_live) {
     closeStream();
   });
   connect(stream, &AbstractStream::eventsMerged, wait_dlg, &QProgressDialog::accept);
+  connect(&StreamManager::instance(), &StreamManager::streamChanged, wait_dlg, &QProgressDialog::accept);
   connect(&SystemRelay::instance(), &SystemRelay::downloadProgress, wait_dlg,
           [wait_dlg](uint64_t cur, uint64_t total, bool success) {
             Q_UNUSED(success);
@@ -426,10 +486,8 @@ void MainWindow::toggleChartsDocking() {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
-  // Force the StreamManager to clean up its resources
+  if (!dbc_controller_->remindSaveChanges()) { event->ignore(); return; }
   StreamManager::instance().shutdown();
-
-  dbc_controller_->remindSaveChanges();
 
   if (floating_window_) floating_window_->deleteLater();
 

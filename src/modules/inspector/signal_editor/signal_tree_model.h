@@ -3,11 +3,17 @@
 #include <QAbstractItemModel>
 #include <QSet>
 #include <memory>
+#include <set>
+#include <span>
 
 #include "core/dbc/dbc_message.h"
 #include "modules/charts/sparkline.h"
 
-enum SignalRole { IsChartedRole = Qt::UserRole + 10 };
+enum SignalRole {
+  IsChartedRole = Qt::UserRole + 10,
+  SignalNumberRole = Qt::UserRole + 12,
+  PinnedSignalRole,
+};
 
 class SignalTreeModel : public QAbstractItemModel {
   Q_OBJECT
@@ -35,7 +41,7 @@ class SignalTreeModel : public QAbstractItemModel {
       ValueTable
     };
     explicit Item(Type t, const QString& title, const dbc::Signal* sig, Item* p)
-        : type(t), title(title), sig(sig), parent(p) {
+        : type(t), parent(p), id(p ? p->id : MessageId{}), sig(sig), title(title) {
       if (t == Type::Sig) sparkline = std::make_unique<Sparkline>();
     }
     ~Item() { qDeleteAll(children); }
@@ -48,6 +54,7 @@ class SignalTreeModel : public QAbstractItemModel {
     Item* parent = nullptr;
     QList<Item*> children;
 
+    MessageId id;
     const dbc::Signal* sig = nullptr;
     QString title;
     bool highlight = false;
@@ -55,7 +62,7 @@ class SignalTreeModel : public QAbstractItemModel {
     std::unique_ptr<Sparkline> sparkline;
   };
 
-  SignalTreeModel(QObject* parent);
+  SignalTreeModel(QObject* parent, bool pinned_only = false);
   void resetSparklines();
   inline const MessageId& messageId() const { return msg_id; }
   void highlightSignalRow(const dbc::Signal* sig);
@@ -69,26 +76,27 @@ class SignalTreeModel : public QAbstractItemModel {
   bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
 
   void setMessage(const MessageId& id);
-  void updateValues(const MessageSnapshot* msg);
-  void updateSparklines(const MessageSnapshot* msg, int first_row, int last_row, const QSize& size);
+  void updateValues(const std::set<MessageId>* ids);
+  void updateSparklines(int first_row, int last_row, const QSize& size);
 
   void setFilter(const QString& txt);
   bool saveSignal(const dbc::Signal* origin_s, dbc::Signal& s);
   Item* itemFromIndex(const QModelIndex& index) const;
   int signalRow(const dbc::Signal* sig) const;
-  QModelIndex valueTableIndex(const dbc::Signal* sig);
+  QModelIndex valueTableIndex(QModelIndex signal);
+  void rebuild();
   void updateChartedSignals(const QMap<MessageId, QSet<const dbc::Signal*>>& opened);
   void fetchMore(const QModelIndex& parent) override;
   bool canFetchMore(const QModelIndex& parent) const override;
 
  private:
   bool hasChildren(const QModelIndex& parent) const override;
-  void insertItem(SignalTreeModel::Item* root_item, int pos, const dbc::Signal* sig);
+  void insertItem(int pos, const MessageId& id, const dbc::Signal* sig);
+  bool saveSignalForMessage(const MessageId& id, const dbc::Signal* origin_s, dbc::Signal& s);
   void handleSignalAdded(MessageId id, const dbc::Signal* sig);
   void handleSignalUpdated(const dbc::Signal* sig);
   void handleSignalRemoved(const dbc::Signal* sig);
   void handleMsgChanged(MessageId id);
-  void rebuild();
 
   MessageId msg_id;
   QString filter_str;
@@ -96,8 +104,10 @@ class SignalTreeModel : public QAbstractItemModel {
   QMap<MessageId, QSet<const dbc::Signal*>> charted_signals_;
   std::unique_ptr<Item> root;
 
-  uint64_t prev_sparkline_ns_ = 0;
-  QSize prev_sparkline_size_;
+  const bool pinned_only_;
 };
 
 QString signalTypeToString(dbc::Signal::Type type);
+
+std::span<const uint8_t> latestSignalPayload(const MessageId& id, const dbc::Signal& signal);
+std::optional<double> latestSignalValue(const MessageId& id, const dbc::Signal* signal);

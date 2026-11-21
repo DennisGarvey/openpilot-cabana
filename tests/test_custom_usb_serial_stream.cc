@@ -44,12 +44,71 @@ int main(int argc, char** argv) {
   // macOS PTYs do not implement the custom-speed ioctl used by USB devices.
   CustomUsbSerialStream stream(&app, QString::fromUtf8(argv[1]), 115200);
   stream.start();
+  bool sent = false;
+  QTimer send_timer;
+  QObject::connect(&send_timer, &QTimer::timeout, &app, [&] {
+    if (!stream.txReady()) return;
+    send_timer.stop();
+    if (stream.sendFrame(1, 0x1abcde, 13, QByteArray(10, 0))) {
+      app.exit(7);  // Ten bytes cannot be encoded in a CAN FD DLC.
+      return;
+    }
+    auto frame = stream.latestDataFrame(MessageId(0, 0x203));
+    if (!frame || frame->data != QByteArray(1, char(0x01)) ||
+        stream.latestDataFrame(MessageId(1, 0x1abcde))) {
+      app.exit(10);  // A restarted adapter must not reuse older frames.
+      return;
+    }
+    dbc::Signal signal;
+    signal.start_bit = 1;
+    signal.size = 3;
+    signal.factor = 0.5;
+    signal.is_signed = true;
+    if (!signal.encodePhysical(-1.0, reinterpret_cast<uint8_t*>(frame->data.data()), frame->data.size()) ||
+        frame->data != QByteArray(1, char(0x0d))) {
+      app.exit(11);
+      return;
+    }
+    const MessageId multiplexed_id(1, 0x22222);
+    dbc::Signal selector;
+    selector.start_bit = 63 * 8;
+    selector.size = 1;
+    selector.update();
+    signal.multiplexor = &selector;
+    signal.multiplex_value = 1;
+    signal.start_bit = 7;
+    signal.size = 12;
+    signal.is_signed = false;
+    signal.is_little_endian = false;
+    signal.factor = 0.25;
+    signal.offset = 10.0;
+    signal.value_table = {{0x123, QStringLiteral("Enabled")}};
+    const auto latest = stream.latestDataFrame(multiplexed_id);
+    auto matching = stream.latestDataFrame(multiplexed_id, &signal);
+    if (!latest || latest->data.back() != char(0xa4) || !matching || matching->data.back() != char(0xa5) ||
+        !signal.encodeRaw(signal.value_table.front().first,
+                          reinterpret_cast<uint8_t*>(matching->data.data()), matching->data.size())) {
+      app.exit(12);
+      return;
+    }
+    sent = stream.sendFrame(multiplexed_id.source, multiplexed_id.address, matching->flags,
+                            matching->data, matching->boot_id);
+    if (!sent || stream.sendFrame(0, 0x123, 0, QByteArray())) app.exit(8);
+  });
+  send_timer.start(20);
   QTimer::singleShot(2200, &app, [&] {
+    const QString expected_status = qEnvironmentVariableIsSet("CABANA_TEST_TX_FIFO_FULL")
+                                        ? "CAN bus 1 transmit queue is full"
+                                        : "Queued by the USB adapter";
+    if (!sent || !stream.txStatus().contains(expected_status)) {
+      app.exit(9);
+      return;
+    }
     stream.stop();
     std::cout << stream.captureStatus().toStdString() << '\n' << stream.captureDetails().toStdString() << '\n';
     const auto& events = stream.allEvents();
-    if (events.size() != 6) {
-      std::cerr << "Expected 6 frames, got " << events.size() << '\n';
+    if (events.size() != 8) {
+      std::cerr << "Expected 8 frames, got " << events.size() << '\n';
       app.exit(1);
       return;
     }

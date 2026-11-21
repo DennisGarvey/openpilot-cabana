@@ -125,3 +125,8 @@ if any(str(target).endswith('test_startup_dbcs') for target in COMMAND_LINE_TARG
     cabana_env.VariantDir('#build/tests', '#tests', duplicate=0)
     cabana_env.Program('#build/test_startup_dbcs', ['#build/tests/test_startup_dbcs.cc', cabana_lib, assets],
                        LIBS=cabana_libs, FRAMEWORKS=base_frameworks)
+
+if any(str(target).endswith('test_view_fixes') for target in COMMAND_LINE_TARGETS):
+    cabana_env.VariantDir('#build/tests', '#tests', duplicate=0)
+    cabana_env.Program('#build/test_view_fixes', ['#build/tests/test_view_fixes.cc', cabana_lib, assets],
+                       LIBS=cabana_libs, FRAMEWORKS=base_frameworks)

@@ -2,9 +2,12 @@
 
 #include <QCheckBox>
 #include <QHBoxLayout>
+#include <QLabel>
 #include <QMenu>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QSignalBlocker>
+#include <QSplitter>
 #include <QVBoxLayout>
 
 #include "common.h"
@@ -41,7 +44,24 @@ MessageList::MessageList(QWidget* parent) : QWidget(parent) {
   restoreHeaderState(settings.message_header_state);
 
   main_layout->addWidget(createToolBar());
-  main_layout->addWidget(table_);
+  auto* splitter = new QSplitter(Qt::Vertical, this);
+  splitter->setChildrenCollapsible(false);
+  pinned_section_ = new QWidget(splitter);
+  auto* pins_layout = new QVBoxLayout(pinned_section_);
+  pins_layout->setContentsMargins(0, 0, 0, 0);
+  pins_layout->addWidget(new QLabel(tr("Pinned Messages"), pinned_section_));
+  pinned_table_ = new MessageTable(pinned_section_);
+  pinned_model_ = new MessageModel(this, true);
+  pinned_table_->setSortingEnabled(false);
+  pinned_table_->setModel(pinned_model_);
+  pinned_table_->setItemDelegate(new MessageDelegate(pinned_table_, CallerType::MessageList));
+  pinned_table_->header()->setStretchLastSection(true);
+  pins_layout->addWidget(pinned_table_);
+  splitter->addWidget(table_);
+  splitter->setStretchFactor(0, 0);
+  splitter->setStretchFactor(1, 1);
+  splitter->setSizes({150, 450});
+  main_layout->addWidget(splitter);
 
   setWhatsThis(tr(R"(
     <b>Message View</b><br/>
@@ -54,6 +74,8 @@ MessageList::MessageList(QWidget* parent) : QWidget(parent) {
   )"));
 
   setupConnections();
+  pinned_section_->hide();
+  pinned_model_->rebuild();
 }
 
 QWidget* MessageList::createToolBar() {
@@ -100,6 +122,34 @@ QWidget* MessageList::createToolBar() {
 
 void MessageList::setupConnections() {
   connect(menu_, &QMenu::aboutToShow, this, &MessageList::onMenuAboutToShow);
+  for (auto* view : {table_, pinned_table_}) {
+    view->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(view, &QWidget::customContextMenuRequested, this, [this, view](const QPoint& point) {
+      const auto* model = static_cast<const MessageModel*>(view->model());
+      const auto* item = model->getItem(view->indexAt(point));
+      if (!item) return;
+      const MessageId id = item->id;
+      const bool pinned = settings.pinned_messages.contains(id.toString());
+      QMenu menu(this);
+      const auto* action = menu.addAction(pinned ? tr("Unpin message") : tr("Pin message"));
+      if (menu.exec(view->viewport()->mapToGlobal(point)) == action) {
+        pinned_model_->setPinned(id, !pinned);
+        table_->update(model_->index(model_->getRowForMessageId(id), MessageModel::NAME));
+      }
+    });
+  }
+  const auto sync_columns = [this] { pinned_table_->header()->restoreState(header_->saveState()); };
+  sync_columns();
+  connect(header_, &QHeaderView::sectionResized, this, sync_columns);
+  connect(header_, &QHeaderView::sectionMoved, this, sync_columns);
+  connect(&StreamManager::instance(), &StreamManager::snapshotsUpdated, pinned_model_, &MessageModel::onSnapshotsUpdated);
+  connect(GetDBC(), &dbc::Manager::DBCFileChanged, pinned_model_, &MessageModel::rebuild);
+  connect(UndoStack::instance(), &QUndoStack::indexChanged, pinned_model_, &MessageModel::rebuild);
+  connect(pinned_table_->selectionModel(), &QItemSelectionModel::currentChanged, this, &MessageList::onCurrentChanged);
+  connect(pinned_model_, &MessageModel::modelReset, this, [this] {
+    pinned_section_->setVisible(pinned_model_->rowCount() > 0);
+    syncPinnedSelection();
+  });
   connect(header_, &MessageHeader::customContextMenuRequested, this, &MessageList::onHeaderContextMenuRequested);
   connect(table_->horizontalScrollBar(), &QScrollBar::valueChanged, header_, &MessageHeader::updateHeaderPositions);
   connect(&StreamManager::instance(), &StreamManager::snapshotsUpdated, model_, &MessageModel::onSnapshotsUpdated);
@@ -132,6 +182,8 @@ void MessageList::selectMessage(const MessageId& msg_id) {
     QModelIndex index = model_->index(row, 0);
     table_->setCurrentIndex(index);
     table_->scrollTo(index, QAbstractItemView::PositionAtCenter);
+  } else if (const int pin_row = pinned_model_->getRowForMessageId(msg_id); pin_row >= 0) {
+    pinned_table_->setCurrentIndex(pinned_model_->index(pin_row, 0));
   }
 }
 
@@ -171,14 +223,14 @@ void MessageList::restoreViewport() {
 
 void MessageList::clearMessageSelection() {
   current_msg_id_.reset();
-  if (table_->selectionModel()) {
-    table_->selectionModel()->clear();
-  }
+  table_->selectionModel()->clear();
+  pinned_table_->selectionModel()->clear();
 }
 
 void MessageList::resetState() {
   clearMessageSelection();
   model_->rebuild();
+  pinned_model_->rebuild();
 
   unmute_all_btn_->setText(tr("Unmute All"));
   unmute_all_btn_->setEnabled(false);
@@ -195,11 +247,28 @@ void MessageList::updateTitle() {
 }
 
 void MessageList::onCurrentChanged(const QModelIndex& current) {
-  auto* item = model_->getItem(current);
-  if (item && (!current_msg_id_ || item->id != *current_msg_id_)) {
-    current_msg_id_ = item->id;
-    emit msgSelectionChanged(*current_msg_id_);
+  if (!current.isValid()) return;
+  const auto* source_model = static_cast<const MessageModel*>(current.model());
+  const auto* item = source_model->getItem(current);
+  if (!item || (current_msg_id_ && item->id == *current_msg_id_)) return;
+
+  current_msg_id_ = item->id;
+  if (source_model == pinned_model_) {
+    const QSignalBlocker blocker(table_->selectionModel());
+    const int row = model_->getRowForMessageId(item->id);
+    if (row >= 0) table_->setCurrentIndex(model_->index(row, 0));
+    else table_->selectionModel()->clear();
+  } else {
+    syncPinnedSelection();
   }
+  emit msgSelectionChanged(*current_msg_id_);
+}
+
+void MessageList::syncPinnedSelection() {
+  const QSignalBlocker blocker(pinned_table_->selectionModel());
+  const int row = current_msg_id_ ? pinned_model_->getRowForMessageId(*current_msg_id_) : -1;
+  if (row >= 0) pinned_table_->setCurrentIndex(pinned_model_->index(row, 0));
+  else pinned_table_->selectionModel()->clear();
 }
 
 void MessageList::onHeaderContextMenuRequested(const QPoint& pos) { menu_->exec(header_->mapToGlobal(pos)); }
@@ -209,7 +278,10 @@ void MessageList::onMenuAboutToShow() {
   for (int i = 0; i < header_->count(); ++i) {
     int logical_index = header_->logicalIndex(i);
     auto action = menu_->addAction(model_->headerData(logical_index, Qt::Horizontal).toString(),
-                                  [=, this](bool checked) { header_->setSectionHidden(logical_index, !checked); });
+                                  [this, logical_index](bool checked) {
+                                    header_->setSectionHidden(logical_index, !checked);
+                                    pinned_table_->header()->setSectionHidden(logical_index, !checked);
+                                  });
     action->setCheckable(true);
     action->setChecked(!header_->isSectionHidden(logical_index));
     // Can't hide the name column

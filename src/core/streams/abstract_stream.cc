@@ -209,7 +209,6 @@ void AbstractStream::mergeEvents(const std::vector<const CanEvent*>& events) {
   // Helper lambda to insert events while maintaining time order
   auto insert_ordered = [](std::vector<const CanEvent*>& target, const std::vector<const CanEvent*>& new_evs) {
     bool is_append = target.empty() || new_evs.front()->mono_ns >= target.back()->mono_ns;
-    target.reserve(target.size() + new_evs.size());
 
     auto pos =
         is_append ? target.end() : std::ranges::upper_bound(target, new_evs.front()->mono_ns, {}, &CanEvent::mono_ns);

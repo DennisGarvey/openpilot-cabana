@@ -66,6 +66,14 @@ class MainWindow : public QMainWindow {
 
   VideoPlayer* video_player_ = nullptr;
   QDockWidget* video_dock_ = nullptr;
+  struct StreamLayout {
+    QString active_message;
+    QStringList message_tabs;
+    ChartsPanel::Layout charts;
+  };
+
+  std::map<QStringList, StreamLayout> stream_layouts_;
+  QTimer* restore_session_timer_ = nullptr;
   QTimer* connection_rate_timer_ = nullptr;
   QElapsedTimer connection_rate_clock_;
   size_t last_frame_count_ = 0;
@@ -79,6 +87,7 @@ class MainWindow : public QMainWindow {
   QMenu* recent_files_menu_ = nullptr;
   QMenu* manage_dbcs_menu_ = nullptr;
   QMenu* tools_menu_ = nullptr;
+  QAction* open_stream_act_ = nullptr;
   QAction* close_stream_act_ = nullptr;
   QAction* export_to_csv_act_ = nullptr;
   QAction* save_dbc_ = nullptr;

@@ -47,7 +47,9 @@ class Sparkline {
   void update(const dbc::Signal* sig, CanEventIter first, CanEventIter last,
               uint64_t current_ns, int time_window, const QSize& size);
   bool isEmpty() const { return image_.isNull(); }
-  bool isUpToDate(uint64_t current_ns) const { return last_processed_ns_ == current_ns; }
+  bool isUpToDate(uint64_t current_ns, const QSize& size) const {
+    return last_processed_ns_ == current_ns && widget_size_ == size;
+  }
   void setHighlight(bool highlight);
   void clearHistory();
 

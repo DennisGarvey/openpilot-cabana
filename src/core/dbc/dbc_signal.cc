@@ -138,11 +138,42 @@ uint64_t dbc::Signal::decodeRaw(const uint8_t* data, size_t data_size) const {
   return val;
 }
 
+bool dbc::Signal::encodePhysical(double value, uint8_t* data, size_t data_size) const {
+  if (!std::isfinite(factor) || factor == 0 || !std::isfinite(offset)) return false;
+  return encodeRaw(std::round((static_cast<long double>(value) - offset) / factor), data, data_size);
+}
+
+bool dbc::Signal::isPresent(const uint8_t* data, size_t data_size) const {
+  auto fits = [data_size](const Signal& signal) {
+    return signal.size >= 1 && signal.size <= 64 &&
+           signal.start_bit >= 0 && signal.start_bit / 8 < data_size &&
+           signal.getBitIndex(signal.size - 1) >= 0 &&
+           signal.getBitIndex(signal.size - 1) / 8 < data_size;
+  };
+  return fits(*this) && (!multiplexor || (fits(*multiplexor) &&
+         multiplexor->decodeRaw(data, data_size) == static_cast<uint64_t>(multiplex_value)));
+}
+
+bool dbc::Signal::encodeRaw(long double raw, uint8_t* data, size_t data_size) const {
+  if (!isPresent(data, data_size) || !std::isfinite(raw) || std::trunc(raw) != raw) return false;
+  const long double limit = std::ldexp(1.0L, size - (is_signed ? 1 : 0));
+  if (raw < (is_signed ? -limit : 0) || raw >= limit) return false;
+  const uint64_t bits = is_signed ? static_cast<uint64_t>(static_cast<int64_t>(raw)) : static_cast<uint64_t>(raw);
+  for (int i = 0; i < size; ++i) {
+    const int bit = getBitIndex(i);
+    const uint8_t mask = 1u << (bit % 8);
+    const int shift = is_little_endian ? i : size - 1 - i;
+    auto& byte = data[bit / 8];
+    byte = (byte & ~mask) | ((bits >> shift & 1) ? mask : 0);
+  }
+  return true;
+}
+
 double dbc::Signal::toPhysical(const uint8_t* data, size_t data_size) const {
   uint64_t val = decodeRaw(data, data_size);
 
   if (is_signed && (val & (1ULL << (size - 1)))) {
-    val |= ~((1ULL << size) - 1);
+    if (size < 64) val |= ~((1ULL << size) - 1);
     return static_cast<int64_t>(val) * factor + offset;
   }
 

@@ -31,18 +31,21 @@ class SignalEditor : public QFrame {
 
  private:
   QWidget* createToolbar();
-  void setupConnections(ChartsPanel* charts);
+  void setupConnections();
   void rowsChanged();
+  void configureTree(SignalTree* view, SignalTreeModel* tree_model, ChartsPanel* charts);
   void resizeEvent(QResizeEvent* event) override;
   void updateToolBar();
   void setSparklineRange(int value);
   void handleSignalAdded(MessageId id, const dbc::Signal* sig);
-  void handleSignalUpdated(const dbc::Signal* sig);
   void updateColumnWidths();
   int signalNameWidth() const;
-  std::pair<QModelIndex, QModelIndex> visibleSignalRange();
+  std::pair<QModelIndex, QModelIndex> visibleSignalRange(SignalTree* view) const;
 
   SignalTree* tree;
+  SignalTree* pinned_tree;
+  SignalTreeModel* pinned_model;
+  QWidget* pinned_section;
   QLabel* sparkline_label;
   QSlider* sparkline_range_slider;
   DebouncedLineEdit* filter_edit;

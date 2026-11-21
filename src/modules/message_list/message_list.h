@@ -38,6 +38,7 @@ class MessageList : public QWidget {
   void restoreViewport();
   // Event handlers
   void onCurrentChanged(const QModelIndex& current);
+  void syncPinnedSelection();
   void onHeaderContextMenuRequested(const QPoint& pos);
   void onMenuAboutToShow();
 
@@ -46,6 +47,9 @@ class MessageList : public QWidget {
   MessageTable* table_;
   MessageHeader* header_;
   MessageDelegate* delegate_;
+  MessageModel* pinned_model_;
+  MessageTable* pinned_table_;
+  QWidget* pinned_section_;
   std::optional<MessageId> current_msg_id_;
   std::optional<MessageId> top_msg_id_;
   int vertical_scroll_ = 0;

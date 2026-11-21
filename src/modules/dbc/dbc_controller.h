@@ -37,7 +37,7 @@ class DbcController : public QObject {
   void populateOpendbcFiles(QMenu* opendbc_menu);
   void populateRecentMenu(QMenu* recent_menu);
   void populateManageMenu(QMenu* manage_menu);
-  void remindSaveChanges();
+  bool remindSaveChanges();
 
  signals:
   void statusMessage(const QString& msg, int timeout_ms = 2000);

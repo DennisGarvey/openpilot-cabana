@@ -29,12 +29,12 @@ DbcController::DbcController(QWidget* parent) : QObject(parent) {
 }
 
 void DbcController::newFile(SourceSet s) {
-  remindSaveChanges();
+  if (!remindSaveChanges()) return;
   GetDBC()->open(s, "", "");
 }
 
 void DbcController::openFile(SourceSet s) {
-  remindSaveChanges();
+  if (!remindSaveChanges()) return;
   QString fn = QFileDialog::getOpenFileName(qobject_cast<QWidget*>(parent()), QObject::tr("Open File"), settings.last_dir, "DBC (*.dbc)");
   if (!fn.isEmpty()) loadFile(fn, s);
 }
@@ -59,7 +59,7 @@ void DbcController::loadFile(const QString& fn, SourceSet s) {
 }
 
 void DbcController::loadFromClipboard(SourceSet s, bool /*close_all*/) {
-  remindSaveChanges();
+  if (!remindSaveChanges()) return;
   QString dbc_str = QGuiApplication::clipboard()->text();
   QString error;
   bool ret = GetDBC()->open(s, "", dbc_str, &error);
@@ -97,7 +97,7 @@ void DbcController::saveAs() {
 }
 
 void DbcController::closeSources(SourceSet s) {
-  remindSaveChanges();
+  if (!remindSaveChanges()) return;
   if (s == SOURCE_ALL)
     GetDBC()->closeAll();
   else
@@ -106,7 +106,7 @@ void DbcController::closeSources(SourceSet s) {
 
 void DbcController::closeFile(dbc::File* dbc_file) {
   Q_ASSERT(dbc_file != nullptr);
-  remindSaveChanges();
+  if (!remindSaveChanges()) return;
   GetDBC()->closeFile(dbc_file);
   if (GetDBC()->fileCount() == 0) {
     newFile();
@@ -219,15 +219,23 @@ void DbcController::populateManageMenu(QMenu* manage_menu) {
   }
 }
 
-void DbcController::remindSaveChanges() {
-  while (!UndoStack::instance()->isClean()) {
-    QString text = QObject::tr("You have unsaved changes. Press ok to save them, cancel to discard.");
-    int ret =
-        QMessageBox::question(qobject_cast<QWidget*>(parent()), QObject::tr("Unsaved Changes"), text, QMessageBox::Ok | QMessageBox::Cancel);
-    if (ret != QMessageBox::Ok) break;
+bool DbcController::remindSaveChanges() {
+  if (UndoStack::instance()->isClean()) return true;
+  const auto answer = QMessageBox::question(qobject_cast<QWidget*>(parent()), tr("Unsaved DBC changes"),
+      tr("Save changes to the DBC files on disk? Discard reloads the files without saving your edits."),
+      QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, QMessageBox::Cancel);
+  if (answer == QMessageBox::Cancel) return false;
+  if (answer == QMessageBox::Save) {
     save();
+    return UndoStack::instance()->isClean();
   }
+  std::vector<std::pair<SourceSet, QString>> files;
+  for (const auto& file : GetDBC()->allFiles())
+    if (!file->filename.isEmpty()) files.emplace_back(GetDBC()->getSourcesForFile(file.get()), file->filename);
+  GetDBC()->closeAll();
+  for (const auto& [sources, filename] : files) loadFile(filename, sources);
   UndoStack::instance()->clear();
+  return true;
 }
 
 void DbcController::updateRecentFiles(const QString& fn) {

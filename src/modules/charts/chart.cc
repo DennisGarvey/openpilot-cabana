@@ -28,6 +28,7 @@ Chart::Chart(QChartView* parent) : parent_(parent), QChart() {
 }
 
 void Chart::setupConnections() {
+  connect(this, &QChart::plotAreaChanged, this, &Chart::updateSeriesPoints);
   connect(axis_x_, &QValueAxis::rangeChanged, this, &Chart::updateAxisY);
   connect(axis_x_, &QValueAxis::rangeChanged, this, &Chart::updateSeriesPoints);
   connect(axis_x_, &QValueAxis::rangeChanged, this, &Chart::resetCache);
@@ -321,6 +322,7 @@ void Chart::updateSeriesPoints() {
 
   const double sec_per_px = range_sec / plot_width;
   for (auto& s : sigs_) {
+    s.updateSeries(series_type, axis_x_->min(), axis_x_->max(), int(plotArea().width()));
     s.updatePointsVisible(sec_per_px);
   }
 }
@@ -334,8 +336,7 @@ void Chart::setSeriesType(SeriesType type) {
     }
     for (auto& s : sigs_) {
       s.series = createSeries(series_type, s.sig->color);
-      const auto& points = series_type == SeriesType::StepLine ? s.step_vals : s.vals;
-      s.series->replace(QVector<QPointF>(points.cbegin(), points.cend()));
+      s.updateSeries(series_type, axis_x_->min(), axis_x_->max(), int(plotArea().width()));
     }
     syncUI();
 
@@ -358,8 +359,7 @@ QXYSeries* Chart::createSeries(SeriesType type, QColor color) {
     legend()->setMarkerShape(QLegend::MarkerShapeCircle);
   }
   series->setColor(color);
-  // TODO: Due to a bug in CameraWidget the camera frames
-  // are drawn instead of the graphs on MacOS. Re-enable OpenGL when fixed
+  // OpenGL charts render incorrectly alongside the camera widget on macOS.
 #ifndef __APPLE__
   series->setUseOpenGL(true);
   QPen pen = series->pen();
@@ -416,7 +416,7 @@ void Chart::prepareData(const dbc::Signal* sig, const MessageEventsMap* msg_new_
 void Chart::updateSeries(const dbc::Signal* sig) {
   for (auto& s : sigs_) {
     if (!sig || s.sig == sig) {
-      s.updateSeries(series_type);
+      s.updateSeries(series_type, axis_x_->min(), axis_x_->max(), int(plotArea().width()));
     }
   }
   updateAxisY();

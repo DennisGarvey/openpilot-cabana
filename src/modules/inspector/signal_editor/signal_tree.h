@@ -14,12 +14,13 @@ struct SignalTree : public QTreeView {
   void mouseMoveEvent(QMouseEvent* event) override;
 
  signals:
-  void highlightRequested(const dbc::Signal* sig);
+  void highlightRequested(const dbc::Signal* sig, bool current_message);
 
  private:
   void paintEvent(QPaintEvent* event) override;
-  void updateHighlight(const dbc::Signal* sig);
+  void updateHighlight(const dbc::Signal* sig, bool current_message = false);
 
  private:
   const dbc::Signal* last_sig = nullptr;
+  bool last_current_message = false;
 };

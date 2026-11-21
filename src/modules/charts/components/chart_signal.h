@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QScatterSeries>
 #include <QtCharts/QValueAxis>
@@ -29,10 +31,16 @@ class ChartSignal {
   ChartSignal(const MessageId& id, const dbc::Signal* s, QXYSeries* ser) : msg_id(id), sig(s), series(ser) {}
   void prepareData(const MessageEventsMap* msg_new_events, double min_x, double max_x);
   void updateRange(double main_x, double max_x);
-  void updateSeries(SeriesType series_type);
+  void updateSeries(SeriesType series_type, double min_x = -std::numeric_limits<double>::infinity(),
+                    double max_x = std::numeric_limits<double>::infinity(), int pixel_width = 0);
   void updatePointsVisible(double sec_per_px);
 
  private:
+  int rendered_width_ = 0;
+  std::pair<double, double> rendered_range_{0, 0};
+  bool series_dirty_ = true;
+  QXYSeries* last_series_ = nullptr;
+  SeriesType last_series_type_ = SeriesType::Line;
   SeriesBounds series_bounds;
   std::pair<double, double> last_range_{0, 0};
 };

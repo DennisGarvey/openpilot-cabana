@@ -20,6 +20,9 @@ class Signal {
   void update();
   int getBitIndex(int i) const;
   uint64_t decodeRaw(const uint8_t* data, size_t data_size) const;
+  bool isPresent(const uint8_t* data, size_t data_size) const;
+  bool encodeRaw(long double raw, uint8_t* data, size_t data_size) const;
+  bool encodePhysical(double value, uint8_t* data, size_t data_size) const;
   double toPhysical(const uint8_t* data, size_t data_size) const;
   std::optional<double> parse(const uint8_t* data, size_t data_size) const;
   QString formatValue(double value, bool with_unit = true) const;

@@ -20,7 +20,8 @@ static const QString& getHexCached(uint32_t addr) {
   return it.value();
 }
 
-MessageModel::MessageModel(QObject* parent) : QAbstractTableModel(parent) {}
+MessageModel::MessageModel(QObject* parent, bool pinned_only)
+    : QAbstractTableModel(parent), pinned_only_(pinned_only) {}
 
 QVariant MessageModel::headerData(int section, Qt::Orientation orientation, int role) const {
   if (orientation != Qt::Horizontal || role != Qt::DisplayRole) return {};
@@ -53,6 +54,10 @@ QVariant MessageModel::data(const QModelIndex& index, int role) const {
     return item.name;
   }
 
+  if (role == PinnedRole && index.column() == Column::NAME) {
+    return !pinned_only_ && !settings.pinned_messages.isEmpty() && settings.pinned_messages.contains(item.id.toString());
+  }
+
   if (role == ColumnTypeRole::IsHexColumn) {
     return index.column() == Column::DATA;
   }
@@ -61,13 +66,23 @@ QVariant MessageModel::data(const QModelIndex& index, int role) const {
 }
 
 void MessageModel::sort(int column, Qt::SortOrder order) {
-  if (column != Column::DATA) {
+  if (!pinned_only_ && column != Column::DATA) {
     sort_column_ = column;
     sort_order_ = order;
     emit layoutAboutToBeChanged();
     sortItems(items_);
     emit layoutChanged();
   }
+}
+
+void MessageModel::setPinned(const MessageId& id, bool pinned) {
+  const auto key = id.toString();
+  if (pinned) {
+    if (!settings.pinned_messages.contains(key)) settings.pinned_messages.append(key);
+  } else {
+    settings.pinned_messages.removeAll(key);
+  }
+  rebuild();
 }
 
 void MessageModel::setInactiveMessagesVisible(bool show) {
@@ -173,12 +188,7 @@ std::vector<MessageModel::Item> MessageModel::fetchItems() {
   signal_count_ = 0;
 
   std::vector<Item> new_items;
-  new_items.reserve(snapshots.size() + dbc_messages.size());
-
-  std::unordered_set<uint32_t> snapshot_addrs;
-  if (show_inactive_) {
-    snapshot_addrs.reserve(snapshots.size());
-  }
+  new_items.reserve(pinned_only_ ? settings.pinned_messages.size() : snapshots.size() + dbc_messages.size());
 
   auto processItem = [&](const MessageId& id, const dbc::Msg* msg, const MessageSnapshot* data) {
     const QString& addr_hex = getHexCached(id.address);
@@ -199,6 +209,18 @@ std::vector<MessageModel::Item> MessageModel::fetchItems() {
       new_items.push_back(std::move(item));
     }
   };
+
+  if (pinned_only_) {
+    for (const auto& key : settings.pinned_messages) {
+      const auto id = MessageId::fromString(key);
+      const auto it = snapshots.find(id);
+      processItem(id, dbc->msg(id), it != snapshots.end() ? it->second.get() : nullptr);
+    }
+    return new_items;
+  }
+
+  std::unordered_set<uint32_t> snapshot_addrs;
+  if (show_inactive_) snapshot_addrs.reserve(snapshots.size());
 
   // Process live snapshots
   for (const auto& [id, data] : snapshots) {

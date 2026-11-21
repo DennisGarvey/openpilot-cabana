@@ -11,10 +11,22 @@
  * usb_aborts:u32, crc:u16. Sequence counts received frames per bus, before
  * queueing. Overflow events indicate at least one lost frame, not an exact count.
  * Flags: bit0 extended, bit1 RTR, bit2 FD, bit3 BRS.
+ * USB transmit requests use the Frame layout with the adapter's current boot ID
+ * and a nonzero request sequence. TX results carry one status byte at offset
+ * 20 and echo the request bus and sequence. Sequence zero announces TX support.
  */
 #define DK_VERSION 1
 #define DK_FRAME 0
 #define DK_STATUS 1
+#define DK_TX_REQUEST 2
+#define DK_TX_RESULT 3
+#define DK_TX_READY 0
+#define DK_TX_QUEUED 1
+#define DK_TX_REJECTED 2
+#define DK_TX_RATE_LIMIT 3
+#define DK_TX_FIFO_FULL 4
+#define DK_TX_CONTROLLER_ERROR 5
+#define DK_TX_PREVIOUS_FAILED 6
 #define DK_MAX_RAW 91
 #define DK_MAX_WIRE 93
 
@@ -84,7 +96,10 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
     if (out < 22 || raw[0] != DK_VERSION || raw[2] > 1 ||
         dk_get(raw + out - 2, 2) != dk_crc(raw, out - 2)) return 0;
     if (raw[1] == DK_STATUS) return out == 34 && raw[3] == 0 ? out : 0;
-    if (raw[1] != DK_FRAME || out < 27 || raw[24] > 64 ||
+    if (raw[1] == DK_TX_RESULT)
+        return out == 23 && raw[3] == 0 && raw[20] <= DK_TX_PREVIOUS_FAILED &&
+            ((dk_get(raw + 8, 4) == 0) == (raw[20] == DK_TX_READY)) ? out : 0;
+    if ((raw[1] != DK_FRAME && raw[1] != DK_TX_REQUEST) || out < 27 || raw[24] > 64 ||
         out != (size_t)(27 + raw[24]) || (raw[3] & ~15)) return 0;
     if (!(raw[3] & 4) && raw[24] > 8) return 0;
     if ((raw[3] & 4) && ((raw[3] & 2) ||

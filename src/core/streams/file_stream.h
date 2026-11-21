@@ -30,6 +30,7 @@ class FileStream : public AbstractStream {
   void start() override;
   bool liveStreaming() const override { return false; }
   QString routeName() const override;
+  const QStringList& filePaths() const { return file_paths_; }
   double minSeconds() const override { return 0; }
   double maxSeconds() const override { return duration_s_; }
   uint64_t beginMonoNs() const override { return begin_mono_ns_; }

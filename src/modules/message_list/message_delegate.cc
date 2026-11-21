@@ -91,7 +91,11 @@ void MessageDelegate::drawItemText(QPainter* p, const QStyleOptionViewItem& opt,
   p->setPen(opt.palette.color(active ? QPalette::Normal : QPalette::Disabled,
                               sel ? QPalette::HighlightedText : QPalette::Text));
 
-  const QRect textRect = opt.rect.adjusted(h_margin_, 0, -h_margin_, 0);
+  QRect textRect = opt.rect.adjusted(h_margin_, 0, -h_margin_, 0);
+  if (caller_type_ == CallerType::MessageList && idx.data(MessageModel::PinnedRole).toBool()) {
+    p->drawPixmap(textRect.left(), textRect.center().y() - 6, utils::icon("pin", {12, 12}, p->pen().color()));
+    textRect.adjust(16, 0, 0, 0);
+  }
   const QFontMetrics& fm = opt.fontMetrics;
   const int y_baseline = textRect.top() + (textRect.height() - fm.height()) / 2 + fm.ascent();
   p->drawText(textRect.left(), y_baseline, fm.elidedText(text, Qt::ElideRight, textRect.width()));

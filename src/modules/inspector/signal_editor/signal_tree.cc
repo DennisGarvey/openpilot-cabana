@@ -9,7 +9,7 @@ SignalTree::SignalTree(QWidget* parent) : QTreeView(parent) {
   setMouseTracking(true);
   setExpandsOnDoubleClick(true);
   setUniformRowHeights(true);
-  setEditTriggers(QAbstractItemView::AllEditTriggers);
+  setEditTriggers(QAbstractItemView::EditKeyPressed);
 
   viewport()->setMouseTracking(true);
   viewport()->setAttribute(Qt::WA_AlwaysShowToolTips, true);
@@ -35,25 +35,28 @@ void SignalTree::mouseMoveEvent(QMouseEvent* event) {
   QTreeView::mouseMoveEvent(event);
 
   const dbc::Signal* current_sig = nullptr;
+  bool current_message = false;
   QModelIndex idx = indexAt(event->pos());
 
   if (idx.isValid()) {
     if (auto m = qobject_cast<SignalTreeModel*>(model())) {
       if (auto item = m->itemFromIndex(idx)) {
         current_sig = item->sig;
+        current_message = item->id == m->messageId();
       }
     }
   } else {
     static_cast<SignalTreeDelegate*>(itemDelegate())->clearHoverState();
   }
 
-  updateHighlight(current_sig);
+  updateHighlight(current_sig, current_message);
 }
 
-void SignalTree::updateHighlight(const dbc::Signal* sig) {
-  if (sig != last_sig) {
+void SignalTree::updateHighlight(const dbc::Signal* sig, bool current_message) {
+  if (sig != last_sig || current_message != last_current_message) {
     last_sig = sig;
-    emit highlightRequested(sig);
+    last_current_message = current_message;
+    emit highlightRequested(sig, current_message);
   }
 }
 

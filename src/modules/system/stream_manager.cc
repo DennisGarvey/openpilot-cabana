@@ -4,13 +4,15 @@
 #include <QProgressDialog>
 
 #include "system_relay.h"
+#include "core/streams/live_stream.h"
 
 StreamManager::StreamManager() : QObject(nullptr) { setStream(new DummyStream(this)); }
 
 void StreamManager::setStream(AbstractStream* new_stream, const QString& dbc_file) {
   if (stream_) {
     // Stop delivery of signals to the manager during deletion
-    stream_->disconnect(this);
+    stream_->disconnect();
+    if (auto* live = dynamic_cast<LiveStream*>(stream_)) live->stop();
     stream_->deleteLater();
     stream_ = nullptr;
   }

@@ -59,6 +59,8 @@ class Settings : public QObject {
 
   // session data
   QString recent_dbc_file;
+  QStringList pinned_signals;
+  QStringList pinned_messages;
   QString active_msg_id;
   QStringList selected_msg_ids;
   QStringList active_charts;

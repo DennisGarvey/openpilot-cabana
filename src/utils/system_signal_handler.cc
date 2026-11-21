@@ -31,5 +31,5 @@ void SystemSignalHandler::handleSigTerm() {
 
   printf("\nexiting...\n");
   qApp->closeAllWindows();
-  qApp->exit();
+  sn->setEnabled(true);
 }

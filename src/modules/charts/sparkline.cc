@@ -23,6 +23,9 @@ void Sparkline::prepareWindow(uint64_t current_ns, int time_window, const QSize&
 
 void Sparkline::update(const dbc::Signal* sig, CanEventIter first, CanEventIter last,
                        uint64_t current_ns, int time_window, const QSize& size) {
+  if (last_processed_ns_ && (current_ns < last_processed_ns_ || current_ns - last_processed_ns_ > 1000000000ULL)) {
+    clearHistory();
+  }
   signal_color_ = sig->color;
   prepareWindow(current_ns, time_window, size);
   updateDataPoints(sig, first, last);
@@ -234,6 +237,7 @@ void Sparkline::clearHistory() {
   max_val_ = std::numeric_limits<double>::lowest();
   bounds_dirty_ = false;
   last_processed_ns_ = 0;
+  widget_size_ = {};
 }
 
 void Sparkline::setHighlight(bool highlight) {

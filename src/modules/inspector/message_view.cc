@@ -68,7 +68,7 @@ MessageView::MessageView(ChartsPanel* charts, QWidget* parent) : charts(charts),
   tabbar->setAutoHide(true);
   tabbar->setContextMenuPolicy(Qt::CustomContextMenu);
 
-  main_layout->addWidget(tabbar);
+  main_layout->addWidget(createScrollableTabBar(tabbar, this));
   main_layout->addWidget(createToolBar());
 
   // 2. Warning Bar (Simplified)
@@ -284,17 +284,20 @@ std::pair<QString, QStringList> MessageView::serializeMessageIds() const {
   return {msg_id.toString(), msgs};
 }
 
-void MessageView::restoreTabs(const QString& active_msg_id, const QStringList& msg_ids) {
+void MessageView::restoreTabs(const QString& active_msg_id, const QStringList& msg_ids, bool include_unknown) {
+  const auto can_restore = [include_unknown](const MessageId& id, const QString& text) {
+    return (include_unknown && id.toString() == text) || GetDBC()->msg(id) != nullptr;
+  };
   resetState();
   tabbar->blockSignals(true);
   for (const auto& str_id : msg_ids) {
     MessageId id = MessageId::fromString(str_id);
-    if (GetDBC()->msg(id) != nullptr) findOrAddTab(id);
+    if (can_restore(id, str_id)) findOrAddTab(id);
   }
   tabbar->blockSignals(false);
 
   auto active_id = MessageId::fromString(active_msg_id);
-  if (GetDBC()->msg(active_id) != nullptr) {
+  if (can_restore(active_id, active_msg_id)) {
     setMessage(active_id);
   } else if (tabbar->count() > 0) {
     tabbar->setCurrentIndex(0);
@@ -327,12 +330,11 @@ void MessageView::refresh() {
 }
 
 void MessageView::updateState(const std::set<MessageId>* msgs) {
-  if (msgs && !msgs->count(msg_id)) return;
-
-  binary_model->updateState();
+  const bool current_updated = !msgs || msgs->contains(msg_id);
+  if (current_updated) binary_model->updateState();
   if (tab_widget->currentIndex() == 0) {
-    signal_editor->updateState();
-  } else {
+    signal_editor->updateState(msgs);
+  } else if (current_updated) {
     message_history->updateState();
   }
 }

@@ -1,13 +1,22 @@
 #include "custom_usb_serial.h"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QDialog>
 #include <QFormLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSerialPortInfo>
+#include <QSignalBlocker>
+#include <QSpinBox>
+#include <QTimer>
 #include <QVBoxLayout>
 
+#include "core/dbc/dbc_manager.h"
 #include "core/streams/custom_usb_serial_stream.h"
 
 CustomUsbSerialWidget::CustomUsbSerialWidget(QWidget* parent) : AbstractStreamWidget(parent) {
@@ -23,7 +32,7 @@ CustomUsbSerialWidget::CustomUsbSerialWidget(QWidget* parent) : AbstractStreamWi
   form->addRow(tr("USB serial port"), ports);
   layout->addLayout(form);
   auto* hint =
-      new QLabel(tr("Requires firmware implementing the Custom USB Serial protocol. View frames from both buses in listen-only mode. "
+      new QLabel(tr("Requires firmware implementing the Custom USB Serial protocol. View frames from both buses. Transmit-capable firmware also supports manual sending. "
                     "Hover over USB statistics for connection details."));
   hint->setWordWrap(true);
   layout->addWidget(hint);
@@ -51,4 +60,228 @@ AbstractStream* CustomUsbSerialWidget::open() {
     QMessageBox::warning(this, tr("Custom USB Serial"), QString::fromUtf8(e.what()));
     return nullptr;
   }
+}
+
+void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerialStream* usb_stream) {
+  QPointer<CustomUsbSerialStream> stream(usb_stream);
+  QDialog dialog(parent);
+  dialog.setWindowTitle(tr("Send Frame"));
+  auto* form = new QFormLayout(&dialog);
+  auto* bus = new QSpinBox(&dialog);
+  bus->setRange(0, 1);
+  auto* messages = new QComboBox(&dialog);
+  auto* address = new QLineEdit(&dialog);
+  address->setPlaceholderText(tr("Hex CAN ID"));
+  auto* data = new QLineEdit(&dialog);
+  data->setPlaceholderText(tr("Hex bytes, for example 01 23 AB"));
+  data->setMinimumWidth(330);
+  auto* extended = new QCheckBox(tr("29-bit ID"), &dialog);
+  auto* fd = new QCheckBox(tr("CAN FD"), &dialog);
+  auto* brs = new QCheckBox(tr("Bit rate switch"), &dialog);
+  auto* send = new QPushButton(tr("Send Once"), &dialog);
+  send->setAutoDefault(false);
+  auto* status = new QLabel(&dialog);
+  status->setWordWrap(true);
+  form->addRow(tr("Bus"), bus);
+  form->addRow(tr("DBC message"), messages);
+  form->addRow(tr("CAN ID"), address);
+  form->addRow(tr("Payload"), data);
+  form->addRow(extended);
+  form->addRow(fd);
+  form->addRow(brs);
+  form->addRow(send);
+  form->addRow(status);
+
+  auto populate = [=] {
+    const QSignalBlocker blocker(messages);
+    messages->clear();
+    address->clear();
+    data->clear();
+    extended->setChecked(false);
+    fd->setChecked(false);
+    messages->addItem(tr("Custom frame"));
+    for (const auto& [id, message] : GetDBC()->getMessages(bus->value())) {
+      messages->addItem(QStringLiteral("%1 (0x%2)").arg(message.name).arg(id, 0, 16), id);
+    }
+  };
+  populate();
+  connect(bus, &QSpinBox::valueChanged, &dialog, populate);
+  connect(GetDBC(), &dbc::Manager::DBCFileChanged, &dialog, populate);
+  connect(messages, &QComboBox::activated, &dialog, [=](int index) {
+    if (!index) return;
+    uint32_t id = messages->currentData().toUInt();
+    const auto* message = GetDBC()->msg(MessageId(bus->value(), id));
+    if (!message) return;
+    address->setText(QString::number(id & 0x1fffffffU, 16));
+    extended->setChecked(id > 0x7ff);
+    fd->setChecked(message->size > 8);
+    data->setText(QStringLiteral("00 ").repeated(std::min(message->size, 64u)).trimmed());
+  });
+  connect(send, &QPushButton::clicked, &dialog, [=] {
+    QString hex = data->text();
+    hex.remove(QRegularExpression(QStringLiteral("\\s")));
+    const QRegularExpression payload_pattern(QStringLiteral("\\A(?:[0-9a-fA-F]{2}){0,64}\\z"));
+    bool address_ok = false;
+    const uint32_t id = address->text().toUInt(&address_ok, 16);
+    const uint8_t flags = (extended->isChecked() ? 1 : 0) | (fd->isChecked() ? 4 : 0) |
+                          (brs->isChecked() ? 8 : 0);
+    if (!stream) return;
+    if (!address_ok || !payload_pattern.match(hex).hasMatch() ||
+        !stream->sendFrame(bus->value(), id, flags, QByteArray::fromHex(hex.toLatin1()))) {
+      QMessageBox::warning(send, tr("Frame not queued"),
+                           tr("Check the CAN ID, frame format, payload length, and USB transmitter status."));
+    }
+  });
+  QTimer timer;
+  auto refresh = [&] {
+    send->setEnabled(stream && stream->txReady());
+    status->setText(stream ? stream->txStatus() : tr("USB stream closed."));
+    brs->setEnabled(fd->isChecked());
+    if (!fd->isChecked()) brs->setChecked(false);
+  };
+  connect(&timer, &QTimer::timeout, &dialog, refresh);
+  connect(fd, &QCheckBox::toggled, &dialog, refresh);
+  timer.start(100);
+  refresh();
+  dialog.exec();
+}
+
+void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSerialStream* usb_stream,
+                                                const MessageId& id, const QString& signal_name) {
+  QPointer<CustomUsbSerialStream> stream(usb_stream);
+  QDialog dialog(parent);
+  dialog.setWindowTitle(tr("Send Signal Value"));
+  auto* form = new QFormLayout(&dialog);
+  auto* value = new QLineEdit(&dialog);
+  auto* choices = new QComboBox(&dialog);
+  choices->setPlaceholderText(tr("Choose a value"));
+  auto* status_area = new QWidget(&dialog);
+  auto* status_layout = new QHBoxLayout(status_area);
+  status_layout->setContentsMargins(0, 0, 0, 0);
+  auto* indicator = new QLabel(QStringLiteral("●"), status_area);
+  indicator->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+  indicator->setFixedWidth(indicator->fontMetrics().horizontalAdvance(QStringLiteral("●")) + 4);
+  auto* status = new QLabel(status_area);
+  status->setTextFormat(Qt::PlainText);
+  status->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+  status->setWordWrap(true);
+  status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+  status->setMinimumWidth(320);
+  status->setFixedHeight(3 * status->fontMetrics().lineSpacing());
+  status_layout->addWidget(indicator);
+  status_layout->addWidget(status, 1);
+  auto* send = new QPushButton(tr("Send Once"), &dialog);
+  send->setAutoDefault(false);
+  form->addRow(tr("Signal"), new QLabel(signal_name + QStringLiteral(" · ") + id.toString(), &dialog));
+  form->addRow(tr("New value"), value);
+  form->addRow(tr("New value"), choices);
+  form->addRow(send);
+  form->addRow(status_area);
+  form->setSizeConstraint(QLayout::SetFixedSize);
+
+  auto getSignal = [&]() -> const dbc::Signal* {
+    const auto* message = GetDBC()->msg(id);
+    return message ? message->sig(signal_name) : nullptr;
+  };
+  const auto* initial_signal = getSignal();
+  const ValueTable value_table = initial_signal ? initial_signal->value_table : ValueTable{};
+  const bool has_choices = !value_table.empty();
+  form->setRowVisible(choices, has_choices);
+  form->setRowVisible(value, !has_choices);
+  if (has_choices) {
+    for (const auto& [raw, label] : value_table) {
+      const QString number = QString::number(raw, 'g', 17);
+      choices->addItem(label.isEmpty() ? number : QStringLiteral("%1 (%2)").arg(label, number), raw);
+    }
+    choices->setCurrentIndex(-1);
+    choices->setFocus();
+  } else if (const auto* signal = initial_signal) {
+    value->setPlaceholderText(signal->unit);
+    if (const auto frame = stream->latestDataFrame(id, signal)) {
+      const auto current = signal->parse(reinterpret_cast<const uint8_t*>(frame->data.constData()), frame->data.size());
+      if (current) value->setText(QString::number(*current, 'g', 17));
+    }
+  }
+  using TxState = CustomUsbSerialStream::TxState;
+  QString input_error;
+  std::optional<TxState> displayed_state;
+  auto refresh = [&] {
+    const auto* signal = getSignal();
+    const bool has_frame = stream && signal && stream->latestDataFrame(id, signal).has_value();
+    const bool has_value = has_choices ? choices->currentIndex() >= 0 : !value->text().trimmed().isEmpty();
+    send->setEnabled(has_frame && has_value && stream->txReady());
+
+    TxState state = TxState::Waiting;
+    QString message;
+    if (!stream) {
+      state = TxState::Error;
+      message = tr("USB stream closed.");
+    } else if (!signal) {
+      state = TxState::Error;
+      message = tr("Signal definition is unavailable.");
+    } else if (!has_frame && signal->multiplexor) {
+      message = tr("Waiting for a frame with %1 = %2.")
+                    .arg(signal->multiplexor->name).arg(signal->multiplex_value);
+    } else if (!has_frame) {
+      message = tr("Waiting for a frame containing this signal.");
+    } else if (!input_error.isEmpty()) {
+      state = TxState::Error;
+      message = input_error;
+    } else {
+      message = stream->txStatus(&state);
+      if (message.isEmpty()) message = has_value ? tr("Ready to send.") : tr("Choose or enter a value to send.");
+    }
+    if (displayed_state == state && status->text() == message) return;
+
+    QColor color = status->palette().color(QPalette::PlaceholderText);
+    switch (state) {
+      case TxState::Ready: color = status->palette().color(QPalette::Highlight); break;
+      case TxState::Waiting: break;
+      case TxState::Queued: color = QColor("#2d9d64"); break;
+      case TxState::Error: color = QColor("#d85c5c"); break;
+    }
+    auto palette = indicator->palette();
+    palette.setColor(QPalette::WindowText, color);
+    indicator->setPalette(palette);
+    displayed_state = state;
+    status->setText(message);
+    status->setToolTip(message);
+  };
+
+  connect(send, &QPushButton::clicked, &dialog, [&] {
+    if (!stream) return;
+    const auto* signal = getSignal();
+    auto frame = signal ? stream->latestDataFrame(id, signal) : std::nullopt;
+    bool numeric = false;
+    const double physical = value->text().toDouble(&numeric);
+    bool encoded = false;
+    if (frame && signal && signal->value_table == value_table) {
+      auto* bytes = reinterpret_cast<uint8_t*>(frame->data.data());
+      if (has_choices && choices->currentIndex() >= 0) {
+        encoded = signal->encodeRaw(choices->currentData().toDouble(), bytes, frame->data.size());
+      } else if (!has_choices && numeric) {
+        encoded = signal->encodePhysical(physical, bytes, frame->data.size());
+      }
+    }
+    input_error.clear();
+    if (!encoded) {
+      input_error = tr("Could not encode the value. Check that it fits the signal.");
+    } else if (!stream->sendFrame(id.source, id.address, frame->flags, frame->data, frame->boot_id)) {
+      input_error = tr("The frame could not be queued. Check the USB connection and try again.");
+    }
+    refresh();
+  });
+
+  QTimer timer;
+  connect(&timer, &QTimer::timeout, &dialog, refresh);
+  auto value_changed = [&] {
+    input_error.clear();
+    refresh();
+  };
+  connect(choices, &QComboBox::currentIndexChanged, &dialog, value_changed);
+  connect(value, &QLineEdit::textChanged, &dialog, value_changed);
+  timer.start(100);
+  refresh();
+  if (!has_choices) value->selectAll();
+  dialog.exec();
 }

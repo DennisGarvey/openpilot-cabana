@@ -13,6 +13,7 @@ class MessageModel : public QAbstractTableModel {
 
  public:
   enum Column { NAME = 0, SOURCE, ADDRESS, NODE, FREQ, COUNT, DATA, MAX_COLUMN };
+  enum Role { PinnedRole = Qt::UserRole + 12 };
 
   struct Item {
     MessageId id;
@@ -25,7 +26,7 @@ class MessageModel : public QAbstractTableModel {
     mutable QString freq_str;
   };
 
-  MessageModel(QObject* parent);
+  MessageModel(QObject* parent, bool pinned_only = false);
 
   // QAbstractTableModel overrides
   QVariant headerData(int section, Qt::Orientation orientation, int role = Qt::DisplayRole) const override;
@@ -52,6 +53,7 @@ class MessageModel : public QAbstractTableModel {
   void setInactiveMessagesVisible(bool show);
   void onSnapshotsUpdated(const std::set<MessageId>* ids, bool needs_rebuild);
   void rebuild();
+  void setPinned(const MessageId& id, bool pinned);
 
  private:
   struct FilterRange {
@@ -77,6 +79,7 @@ class MessageModel : public QAbstractTableModel {
   std::vector<CompiledFilter> compiled_filters_;
   bool has_dynamic_filters_ = false;
   bool show_inactive_ = true;
+  const bool pinned_only_;
   int sort_column_ = 0;
   Qt::SortOrder sort_order_ = Qt::AscendingOrder;
   int sort_threshold_ = 0;

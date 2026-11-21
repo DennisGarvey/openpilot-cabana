@@ -20,7 +20,14 @@ class ChartsPanel : public QFrame {
   Q_OBJECT
 
  public:
+  struct Layout {
+    QList<QStringList> tabs;
+    int current_tab = 0;
+  };
+
   ChartsPanel(QWidget* parent = nullptr);
+  Layout saveLayout() const;
+  void restoreLayout(const Layout& layout);
   void showChart(const MessageId& id, const dbc::Signal* sig, bool show, bool merge);
   void mergeCharts(ChartView* chart, ChartView* target);
   void moveChart(ChartView* chart, ChartView* target, DropMode mode);

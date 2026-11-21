@@ -4,6 +4,7 @@ import binascii
 import os
 from pathlib import Path
 import pty
+import select
 import struct
 import subprocess
 import tempfile
@@ -26,6 +27,19 @@ def encode(raw):
             code += 1
     out[code_at] = code
     return bytes(out) + b'\0'
+
+
+def decode(wire):
+    raw = bytearray()
+    while wire:
+        code = wire[0]
+        assert 0 < code <= len(wire)
+        raw.extend(wire[1:code])
+        wire = wire[code:]
+        if wire and code != 255:
+            raw.append(0)
+    assert binascii.crc_hqx(raw[:-2], 0xffff) == struct.unpack('<H', raw[-2:])[0]
+    return raw[:-2]
 
 
 def frame(bus, sequence, timestamp, address, data, flags=0, boot=123):
@@ -60,6 +74,8 @@ def main():
             stream += frame(0, 2, 1400, 0x202, b'\0\xff')
             stream += encode(struct.pack('<BBBBIIQIII', 1, 1, 0, 0, 123, 2, 1500, 1, 2, 3))
             stream += frame(0, 1, 100, 0x203, b'\x01', boot=124)
+            stream += frame(1, 1, 110, 0x22222, b'\xa5' * 64, 13, boot=124)
+            stream += frame(1, 2, 120, 0x22222, b'\xa5' * 63 + b'\xa4', 13, boot=124)
             # Exercise arbitrary serial boundaries, including a one-byte read.
             start = 0
             for size in (1, 7, 2, 29, 1, 64, 3, 5, 200, len(stream)):
@@ -68,11 +84,28 @@ def main():
                     os.write(master, chunk)
                     start += len(chunk)
                     time.sleep(.005)
+            os.write(master, encode(struct.pack('<BBBBIIQB', 1, 3, 0, 0, 124, 0, 101, 0)))
+            pending = bytearray()
+            while True:
+                ready, _, _ = select.select([master], [], [], 1)
+                assert ready, 'No USB transmit request'
+                pending.extend(os.read(master, 256))
+                records = pending.lstrip(b'\0').split(b'\0', 1)
+                if len(records) == 2:
+                    assert not records[1], 'Unexpected second TX request'
+                    break
+            request = decode(records[0])
+            version, kind, bus, flags, boot, sequence, _, address, length = struct.unpack('<BBBBIIQIB', request[:25])
+            assert (version, kind, bus, flags, boot, address, length) == (1, 2, 1, 13, 124, 0x22222, 64)
+            assert sequence and request[25:] == b'\x12\x35' + b'\xa5' * 62
+            tx_result = 4 if 'CABANA_TEST_TX_FIFO_FULL' in os.environ else 1
+            os.write(master, encode(struct.pack('<BBBBIIQB', 1, 3, 1, 0, 124, sequence, 102, tx_result)))
             stdout, stderr = process.communicate(timeout=8)
             print(stdout.decode())
             if process.returncode:
                 raise AssertionError(f'exit={process.returncode}: {stderr.decode()}')
             assert not list(Path(directory).iterdir()), 'Live USB must not write recording files'
+            print('USB transmission integration: invalid length rejected, one outstanding request, multiplexed 64-byte FD payload and status passed')
             print('Serial integration: both buses, FD, RTR, fragmentation, corruption, sequence wrap/gap, reboot, no disk recording passed')
         finally:
             if process.poll() is None:

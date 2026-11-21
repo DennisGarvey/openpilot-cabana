@@ -31,7 +31,7 @@ ChartsPanel::ChartsPanel(QWidget* parent) : QFrame(parent) {
   stack_->addWidget(scroll_area_);
 
   main_layout->addWidget(toolbar);
-  main_layout->addWidget(tab_manager_->tabbar());
+  main_layout->addWidget(createScrollableTabBar(tab_manager_->tabbar(), this));
   main_layout->addWidget(stack_);
 
   // init settings
@@ -58,6 +58,12 @@ ChartsPanel::ChartsPanel(QWidget* parent) : QFrame(parent) {
 void ChartsPanel::setupConnections() {
   connect(align_timer, &QTimer::timeout, this, &ChartsPanel::alignCharts);
   connect(GetDBC(), &dbc::Manager::DBCFileChanged, this, &ChartsPanel::removeAll);
+  connect(&StreamManager::instance(), &StreamManager::streamChanged, this, [this] {
+    const double start = StreamManager::stream()->minSeconds();
+    display_range = {start, start + max_chart_range};
+    hideHover();
+    removeAll();
+  });
   connect(&StreamManager::instance(), &StreamManager::eventsMerged, this, &ChartsPanel::eventsMerged);
   connect(&StreamManager::instance(), &StreamManager::snapshotsUpdated, this, &ChartsPanel::updateState);
   connect(&StreamManager::instance(), &StreamManager::seeking, this, &ChartsPanel::updateState);
@@ -297,15 +303,46 @@ void ChartsPanel::splitChart(ChartView* src_view) {
   src_view->setUpdatesEnabled(true);
 }
 
-QStringList ChartsPanel::serializeChartIds() const {
+static QStringList chartIds(const QList<ChartView*>& views) {
   QStringList chart_ids;
-  for (auto c : charts) {
+  for (auto* view : views) {
     QStringList ids;
-    for (const auto& s : c->chart()->sigs_) ids += QString("%1|%2").arg(s.msg_id.toString(), s.sig->name);
+    for (const auto& signal : view->chart()->sigs_) {
+      ids += QString("%1|%2").arg(signal.msg_id.toString(), signal.sig->name);
+    }
     chart_ids += ids.join(',');
   }
+  return chart_ids;
+}
+
+QStringList ChartsPanel::serializeChartIds() const {
+  auto chart_ids = chartIds(charts);
   std::ranges::reverse(chart_ids);
   return chart_ids;
+}
+
+ChartsPanel::Layout ChartsPanel::saveLayout() const {
+  const auto* tabbar = tab_manager_->tabbar();
+  Layout layout;
+  layout.current_tab = tabbar->currentIndex();
+  for (int index = 0; index < tabbar->count(); ++index) {
+    const int id = tabbar->tabData(index).toInt();
+    if (const auto it = tab_manager_->tab_charts_.constFind(id); it != tab_manager_->tab_charts_.cend()) {
+      layout.tabs.append(chartIds(it.value()));
+    } else {
+      layout.tabs.append(QStringList{});
+    }
+  }
+  return layout;
+}
+
+void ChartsPanel::restoreLayout(const Layout& layout) {
+  auto* tabbar = tab_manager_->tabbar();
+  for (int index = 0; index < layout.tabs.size(); ++index) {
+    if (index > 0) tab_manager_->addTab();
+    restoreChartsFromIds(layout.tabs[index]);
+  }
+  tabbar->setCurrentIndex(layout.current_tab);
 }
 
 void ChartsPanel::restoreChartsFromIds(const QStringList& chart_ids) {

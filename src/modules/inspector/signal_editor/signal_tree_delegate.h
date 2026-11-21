@@ -32,8 +32,8 @@ class SignalTreeDelegate : public QStyledItemDelegate {
   int nameColumnWidth(const dbc::Signal* sig) const;
 
  signals:
-  void removeRequested(const dbc::Signal*);
-  void plotRequested(const dbc::Signal*, bool show, bool merge);
+  void removeRequested(const MessageId&, const dbc::Signal*);
+  void plotRequested(const MessageId&, const dbc::Signal*, bool show, bool merge);
 
  private:
   QRect getButtonRect(const QRect& columnRect, int buttonIndex) const;

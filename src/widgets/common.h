@@ -36,3 +36,5 @@ class ElidedLabel : public QLabel {
 };
 
 QFrame* createVLine(QWidget* parent);
+
+QWidget* createScrollableTabBar(TabBar* tabs, QWidget* parent);
