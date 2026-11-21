@@ -169,12 +169,15 @@ void MessageList::restoreViewport() {
   table_->horizontalScrollBar()->setValue(horizontal_scroll_);
 }
 
-void MessageList::resetState() {
+void MessageList::clearMessageSelection() {
   current_msg_id_.reset();
   if (table_->selectionModel()) {
-    table_->selectionModel()->clearSelection();
-    table_->selectionModel()->clearCurrentIndex();
+    table_->selectionModel()->clear();
   }
+}
+
+void MessageList::resetState() {
+  clearMessageSelection();
   model_->rebuild();
 
   unmute_all_btn_->setText(tr("Unmute All"));

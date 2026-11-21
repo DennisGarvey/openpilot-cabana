@@ -174,6 +174,54 @@ To read CAN messages from a connected Panda, use the following command:
 cabana --panda
 ```
 
+### DBC assignments at launch
+
+Repeat `--dbc BUS:FILE` to assign one database to each physical bus. Quote the
+whole value when a path contains spaces:
+
+```sh
+./cabana --custom-usb-serial /dev/cu.usbmodem101 \
+  --dbc "0:/path/to/CH.dbc" \
+  --dbc "1:/path/to/VEH.dbc"
+```
+
+An unprefixed `--dbc /path/to/default.dbc` supplies a global fallback for buses
+without an explicit assignment. Physical bus numbers 0–63 are accepted; sent and
+blocked aliases use the same database as their physical bus. Duplicate assignments,
+unreadable paths and out-of-range bus numbers are rejected before connecting to a
+source. Each `--dbc` takes one value. These options also work with replay sources.
+Startup assignments do not save a mapping profile.
+
+### Custom USB Serial live viewing
+
+Select **Custom USB Serial** in the stream selector and choose the serial port.
+The device must implement the Custom USB Serial CAN streaming protocol: COBS-framed
+binary records with CRC16, device timestamps and per-bus sequence numbers. Frames
+from buses 0 and 1 are supported, with their reported bus numbers preserved.
+
+```sh
+./cabana --custom-usb-serial /dev/cu.usbmodem101
+```
+
+Frames are ingested into memory for live viewing. This source does not save USB
+records or create live route logs, including when global live logging is enabled.
+The status bar reports received frames per bus, sequence gaps, queue drops,
+hardware FIFO overflow events and invalid records. Hover for USB write aborts and
+device restarts. Hardware overflow events are a lower bound on lost frames, and
+drop counters overlap. Silence and serial errors appear in the status bar.
+
+Cabana's event model displays bus, numeric ID and payload. Standard and extended
+frames sharing the same numeric ID appear together. RTR frames have an empty
+payload. Timestamps are software receive times, made nondecreasing across RX task
+ordering and device restarts.
+
+Build and run the simulated serial integration test:
+
+```sh
+.venv/bin/scons cabana build/test_custom_usb_serial_stream
+python3 tests/test_custom_usb_serial.py
+```
+
 ### Opening a Vector ASC Log File
 
 Cabana can open CAN logs recorded in the Vector ASC format (produced by CANalyzer, CANoe, PEAK, and many other tools).

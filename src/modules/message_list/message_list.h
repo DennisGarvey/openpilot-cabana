@@ -21,6 +21,7 @@ class MessageList : public QWidget {
   bool restoreHeaderState(const QByteArray& state) const { return table_->header()->restoreState(state); }
   void suppressHighlighted(bool suppress);
   void selectMessage(const MessageId& message_id);
+  void clearMessageSelection();
 
  signals:
   void msgSelectionChanged(const MessageId& message_id);

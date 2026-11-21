@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QMainWindow>
 #include <QMenu>
 #include <QSplitter>
@@ -15,13 +16,14 @@
 #include "widgets/status_bar.h"
 
 class DbcController;
+class QTimer;
 class QVBoxLayout;
 
 class MainWindow : public QMainWindow {
   Q_OBJECT
 
  public:
-  MainWindow(AbstractStream* stream, const QString& dbc_file);
+  MainWindow(AbstractStream* stream, const QString& dbc_file, const std::map<int, QString>& bus_dbcs = {});
   void toggleChartsDocking();
   ChartsPanel* charts_panel = nullptr;
 
@@ -58,11 +60,15 @@ class MainWindow : public QMainWindow {
   void onlineHelp();
   void toggleFullScreen();
   void eventsMerged();
+  void updateConnectionRate();
   void saveSessionState();
   void restoreSessionState();
 
   VideoPlayer* video_player_ = nullptr;
   QDockWidget* video_dock_ = nullptr;
+  QTimer* connection_rate_timer_ = nullptr;
+  QElapsedTimer connection_rate_clock_;
+  size_t last_frame_count_ = 0;
   QDockWidget* messages_dock_ = nullptr;
   MessageList* message_list_ = nullptr;
   MessageInspector* inspector_widget_ = nullptr;

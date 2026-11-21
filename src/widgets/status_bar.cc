@@ -11,6 +11,7 @@
 #include "modules/system/stream_manager.h"
 #include "core/streams/abstract_stream.h"
 #include "core/streams/device_stream.h"
+#include "core/streams/custom_usb_serial_stream.h"
 #ifdef __linux__
 #include <unistd.h>
 
@@ -127,8 +128,12 @@ void StatusBar::updateMetrics() {
                             .arg(total_event_count, 6)
                             .arg(QString::fromStdString(formattedDataSize(total_data_size)));
     live_stats_label_->setText(stats_text);
+  } else if (auto* serial_stream = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
+    live_stats_label_->setText(serial_stream->captureStatus());
+    live_stats_label_->setToolTip(serial_stream->captureDetails());
   } else {
     live_stats_label_->setText("");
+    live_stats_label_->setToolTip("");
   }
 
 #ifdef __linux__

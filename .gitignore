@@ -2,3 +2,5 @@ build/
 cabana
 tests/test_cabana
 *.dblite
+build-*.log
+.venv/

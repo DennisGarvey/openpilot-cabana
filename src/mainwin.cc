@@ -26,7 +26,8 @@
 #include "tools/findsignal.h"
 #include "widgets/guide_overlay.h"
 
-MainWindow::MainWindow(AbstractStream* stream, const QString& dbc_file) : QMainWindow() {
+MainWindow::MainWindow(AbstractStream* stream, const QString& dbc_file, const std::map<int, QString>& bus_dbcs)
+    : QMainWindow() {
   dbc_controller_ = new DbcController(this);
   charts_panel = new ChartsPanel(this);
   inspector_widget_ = new MessageInspector(charts_panel, this);
@@ -48,8 +49,12 @@ MainWindow::MainWindow(AbstractStream* stream, const QString& dbc_file) : QMainW
 
   setupConnections();
 
-  QTimer::singleShot(0, this, [this, stream, dbc_file]() {
+  QTimer::singleShot(0, this, [this, stream, dbc_file, bus_dbcs]() {
+    for (const auto& [bus, filename] : bus_dbcs) {
+      dbc_controller_->loadFile(filename, {bus, bus + 128, bus + 192});
+    }
     stream ? openStream(stream, dbc_file) : selectAndOpenStream(dbc_file);
+    if (!bus_dbcs.empty()) DBCFileChanged();
   });
   show();
 }
@@ -65,10 +70,15 @@ void MainWindow::setupConnections() {
   connect(UndoStack::instance(), &QUndoStack::cleanChanged, this, &MainWindow::undoStackCleanChanged);
   connect(&StreamManager::instance(), &StreamManager::streamChanged, this, &MainWindow::onStreamChanged);
   connect(&StreamManager::instance(), &StreamManager::eventsMerged, this, &MainWindow::eventsMerged);
+  connection_rate_timer_ = new QTimer(this);
+  connection_rate_timer_->setInterval(1000);
+  connect(connection_rate_timer_, &QTimer::timeout, this, &MainWindow::updateConnectionRate);
 
   connect(charts_panel, &ChartsPanel::openMessage, message_list_, &MessageList::selectMessage);
   connect(inspector_widget_->getMessageView(), &MessageView::activeMessageChanged, message_list_,
           &MessageList::selectMessage);
+  connect(inspector_widget_->getMessageView(), &MessageView::lastTabClosed, message_list_,
+          &MessageList::clearMessageSelection);
 }
 
 void MainWindow::setupMenus() {
@@ -216,13 +226,41 @@ void MainWindow::createShortcuts() {
       stream->pause(!stream->isPaused());
     }
   });
-  // TODO: add more shortcuts here.
+  auto* message_view = inspector_widget_->getMessageView();
+  auto* close_tab = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_W), inspector_widget_);
+  auto* reopen_tab = new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_T), inspector_widget_);
+  close_tab->setAutoRepeat(false);
+  reopen_tab->setAutoRepeat(false);
+  connect(close_tab, &QShortcut::activated, message_view, &MessageView::closeCurrentTab);
+  connect(reopen_tab, &QShortcut::activated, message_view, &MessageView::reopenClosedTab);
 }
 
 void MainWindow::onStreamChanged() {
+  auto& manager = StreamManager::instance();
   if (auto* handle = video_splitter_->handle(1)) {
-    handle->setEnabled(!StreamManager::instance().isLiveStream());
+    handle->setEnabled(!manager.isLiveStream());
   }
+  connection_rate_timer_->stop();
+  if (manager.hasStream() && manager.isLiveStream()) {
+    last_frame_count_ = manager.currentStream()->allEvents().size();
+    connection_rate_clock_.start();
+    video_dock_->setWindowTitle(tr("%1 · %L2 frames/s").arg(manager.currentStream()->routeName()).arg(0));
+    connection_rate_timer_->start();
+  } else {
+    video_dock_->setWindowTitle(manager.hasStream() ? manager.currentStream()->routeName() : tr("Video"));
+  }
+}
+
+void MainWindow::updateConnectionRate() {
+  const auto* stream = StreamManager::stream();
+  const size_t count = stream->allEvents().size();
+  const qint64 elapsed_ms = connection_rate_clock_.restart();
+  if (elapsed_ms <= 0) return;
+
+  const size_t received = count >= last_frame_count_ ? count - last_frame_count_ : 0;
+  last_frame_count_ = count;
+  const auto rate = qRound64(1000.0 * received / elapsed_ms);
+  video_dock_->setWindowTitle(tr("%1 · %L2 frames/s").arg(stream->routeName()).arg(rate));
 }
 
 void MainWindow::undoStackCleanChanged(bool clean) { setWindowModified(!clean); }
@@ -291,7 +329,6 @@ void MainWindow::openStream(AbstractStream* stream, const QString& dbc_file) {
   export_to_csv_act_->setEnabled(has_stream);
   tools_menu_->setEnabled(has_stream);
 
-  video_dock_->setWindowTitle(has_stream ? sm.stream()->routeName() : tr("Video"));
   if (is_live_stream || video_splitter_->sizes()[0] == 0) {
     // display video at minimum size.
     video_splitter_->setSizes({1, 1});

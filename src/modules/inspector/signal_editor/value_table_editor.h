@@ -2,6 +2,7 @@
 #include <QDialog>
 #include <QStyledItemDelegate>
 #include <QTableWidget>
+#include <optional>
 
 #include "core/dbc/dbc_message.h"
 
@@ -11,6 +12,7 @@ class QPushButton;
 class ValueTableEditor : public QDialog {
  public:
   ValueTableEditor(const ValueTable& descriptions, QWidget* parent, const dbc::Signal* extra_info = nullptr);
+  void highlightCurrentValue(std::optional<double> raw_value, bool reveal = false);
   ValueTable value_table;
 
  private:

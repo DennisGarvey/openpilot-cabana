@@ -10,8 +10,31 @@
 #include <QToolTip>
 
 #include "core/commands/commands.h"
+#include "modules/system/stream_manager.h"
 #include "value_table_editor.h"
 #include "widgets/validators.h"
+
+namespace {
+std::optional<double> currentRawValue(const dbc::Signal& signal, const MessageSnapshot& snapshot) {
+  const auto fits = [&snapshot](const dbc::Signal& sig) {
+    return sig.size > 0 && sig.size <= 64 && sig.msb >= 0 && sig.lsb >= 0 &&
+           std::max(sig.msb, sig.lsb) / 8 < snapshot.size;
+  };
+  if (!fits(signal)) return std::nullopt;
+  if (const auto* mux = signal.multiplexor;
+      mux && (!fits(*mux) || mux->decodeRaw(snapshot.data.data(), snapshot.size) !=
+                                static_cast<uint64_t>(signal.multiplex_value))) {
+    return std::nullopt;
+  }
+
+  uint64_t raw = signal.decodeRaw(snapshot.data.data(), snapshot.size);
+  if (!signal.is_signed) return static_cast<double>(raw);
+  if (signal.size < 64 && (raw & (uint64_t{1} << (signal.size - 1)))) {
+    raw |= ~uint64_t{0} << signal.size;
+  }
+  return static_cast<double>(static_cast<int64_t>(raw));
+}
+}
 
 SignalTreeDelegate::SignalTreeDelegate(QObject* parent) : QStyledItemDelegate(parent) {
   name_validator = new NameValidator(this);
@@ -130,6 +153,20 @@ void SignalTreeDelegate::openValueTable(QWidget* parent, const QModelIndex& inde
   auto* item = static_cast<SignalTreeModel::Item*>(index.internalPointer());
   ValueTableEditor dialog(item->sig->value_table, parent, show_extra_info ? item->sig : nullptr);
   dialog.setWindowTitle(show_extra_info ? tr("Extra Info — %1").arg(item->sig->name) : item->sig->name);
+  if (show_extra_info && !item->sig->value_table.empty()) {
+    const MessageId id = static_cast<const SignalTreeModel*>(index.model())->messageId();
+    const auto updateHighlight = [&dialog, target, id](bool reveal) {
+      const auto* current_stream = StreamManager::stream();
+      if (!target.isValid() || !current_stream) return;
+      const auto* signal = static_cast<const SignalTreeModel::Item*>(target.internalPointer())->sig;
+      dialog.highlightCurrentValue(currentRawValue(*signal, *current_stream->snapshot(id)), reveal);
+    };
+    updateHighlight(true);
+    connect(&StreamManager::instance(), &StreamManager::snapshotsUpdated, &dialog,
+            [updateHighlight, id](const std::set<MessageId>* ids) {
+              if (!ids || ids->contains(id)) updateHighlight(false);
+            });
+  }
   if (dialog.exec() == QDialog::Accepted && target.isValid()) {
     auto* model = const_cast<QAbstractItemModel*>(target.model());
     model->setData(target, QVariant::fromValue(dialog.value_table));

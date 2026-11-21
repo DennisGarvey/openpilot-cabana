@@ -11,6 +11,7 @@
 #include "asc_log.h"
 #include "candump_log.h"
 #include "device.h"
+#include "custom_usb_serial.h"
 #include "panda.h"
 #include "route.h"
 #include "socketcan.h"
@@ -70,6 +71,7 @@ StreamSelector::StreamSelector(QWidget* parent, const QString& initial_dbc)
     addStreamWidget(new SocketCanWidget, tr("&SocketCAN"));
   }
   addStreamWidget(new DeviceWidget, tr("&Device"));
+  addStreamWidget(new CustomUsbSerialWidget, tr("Custom USB &Serial"));
 
   if (settings.last_stream_option >= 0 && settings.last_stream_option < tab->count()) {
     tab->setCurrentIndex(settings.last_stream_option);

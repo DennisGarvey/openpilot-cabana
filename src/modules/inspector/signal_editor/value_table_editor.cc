@@ -11,6 +11,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QTableWidgetItem>
 
 #include "utils/util.h"
@@ -95,6 +96,26 @@ void ValueTableEditor::addRow(const QString& val, const QString& desc) {
 
   table->setItem(row, 0, valItem);
   table->setItem(row, 1, descItem);
+}
+
+void ValueTableEditor::highlightCurrentValue(std::optional<double> raw_value, bool reveal) {
+  const QSignalBlocker blocker(table);
+  QColor highlight = table->palette().highlight().color();
+  highlight.setAlpha(70);
+  for (int row = 0; row < table->rowCount(); ++row) {
+    auto* key = table->item(row, 0);
+    bool valid = false;
+    const double value = key->text().toDouble(&valid);
+    const bool current = raw_value && valid && value == *raw_value;
+    const QBrush background = current ? QBrush(highlight) : QBrush();
+    const QString hint = current ? tr("Current value") : QString();
+    for (int col = 0; col < table->columnCount(); ++col) {
+      auto* item = table->item(row, col);
+      item->setBackground(background);
+      item->setToolTip(hint);
+    }
+    if (current && reveal) table->scrollToItem(key, QAbstractItemView::PositionAtCenter);
+  }
 }
 
 void ValueTableEditor::setupConnections() {

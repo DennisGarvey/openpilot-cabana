@@ -3,6 +3,8 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QSignalBlocker>
+#include <QStyleOptionTab>
 #include <QVBoxLayout>
 
 #include "core/commands/commands.h"
@@ -10,12 +12,58 @@
 #include "message_edit.h"
 #include "modules/system/stream_manager.h"
 
+namespace {
+const QString kTabSeparator = QStringLiteral(" · ");
+
+class MessageTabBar : public TabBar {
+ public:
+  using TabBar::TabBar;
+
+ protected:
+  QSize tabSizeHint(int index) const override {
+    QSize size = TabBar::tabSizeHint(index);
+    size.setWidth(std::max(size.width(), widthForText(index, size, tabText(index))));
+    return size;
+  }
+
+  QSize minimumTabSizeHint(int index) const override {
+    QSize minimum = TabBar::minimumTabSizeHint(index);
+    const QSize full_size = tabSizeHint(index);
+    const QString text = tabText(index);
+    const auto separator = text.indexOf(kTabSeparator);
+    if (separator < 0) return full_size;
+
+    const QString prefix = text.left(separator) + QStringLiteral("…");
+    minimum.setWidth(std::max(minimum.width(), widthForText(index, full_size, prefix)));
+    return minimum;
+  }
+
+ private:
+  int widthForText(int index, QSize size, const QString& text) const {
+    QStyleOptionTab option;
+    option.initFrom(this);
+    option.shape = shape();
+    option.rect = QRect(QPoint(), size);
+    if (const auto* button = tabButton(index, QTabBar::RightSide)) option.rightButtonSize = button->size();
+    const int text_area = style()->subElementRect(QStyle::SE_TabBarTabText, &option, this).width();
+    return size.width() - text_area + fontMetrics().horizontalAdvance(text) + 2;
+  }
+};
+
+QString messageTabLabel(const MessageId& id) {
+  const auto* message = GetDBC()->msg(id);
+  return message && !message->name.isEmpty() ? id.toString() + kTabSeparator + message->name : id.toString();
+}
+}
+
 MessageView::MessageView(ChartsPanel* charts, QWidget* parent) : charts(charts), QWidget(parent) {
   auto* main_layout = new QVBoxLayout(this);
   main_layout->setContentsMargins(0, 0, 0, 0);
 
   // 1. Navigation & Controls
-  tabbar = new TabBar(this);
+  tabbar = new MessageTabBar(this);
+  tabbar->setElideMode(Qt::ElideRight);
+  tabbar->setExpanding(false);
   tabbar->setUsesScrollButtons(true);
   tabbar->setAutoHide(true);
   tabbar->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -82,10 +130,11 @@ void MessageView::setupConnections() {
       setMessage(id);
       emit activeMessageChanged(id);
     } else {
-      emit activeMessageChanged(MessageId());
+      clearMessage();
+      emit lastTabClosed();
     }
   });
-  connect(tabbar, &QTabBar::tabCloseRequested, tabbar, &QTabBar::removeTab);
+  connect(tabbar, &QTabBar::tabCloseRequested, this, &MessageView::closeTab);
 }
 
 QWidget* MessageView::createToolBar() {
@@ -141,27 +190,61 @@ void MessageView::showTabBarContextMenu(const QPoint& pt) {
     QMenu menu(this);
     menu.addAction(tr("Close Other Tabs"));
     if (menu.exec(tabbar->mapToGlobal(pt))) {
-      tabbar->moveTab(index, 0);
-      tabbar->setCurrentIndex(0);
-      while (tabbar->count() > 1) {
-        tabbar->removeTab(1);
+      tabbar->setCurrentIndex(index);
+      for (int i = tabbar->count() - 1; i >= 0; --i) {
+        if (i != index) closeTab(i);
       }
     }
   }
+}
+
+void MessageView::closeTab(int index) {
+  if (index < 0 || index >= tabbar->count()) return;
+  closed_tabs.push_back({tabbar->tabData(index).value<MessageId>(), index});
+  tabbar->removeTab(index);
+}
+
+void MessageView::closeCurrentTab() { closeTab(tabbar->currentIndex()); }
+
+void MessageView::reopenClosedTab() {
+  if (closed_tabs.empty()) return;
+
+  const auto closed = closed_tabs.back();
+  closed_tabs.pop_back();
+  setMessage(closed.id);
+  {
+    const QSignalBlocker blocker(tabbar);
+    tabbar->moveTab(tabbar->currentIndex(), std::min(closed.index, tabbar->count() - 1));
+  }
+  emit activeMessageChanged(closed.id);
 }
 
 int MessageView::findOrAddTab(const MessageId& id) {
   for (int i = 0; i < tabbar->count(); ++i) {
     if (tabbar->tabData(i).value<MessageId>() == id) return i;
   }
-  int index = tabbar->addTab(id.toString());
+  std::erase_if(closed_tabs, [&id](const ClosedTab& tab) { return tab.id == id; });
+  const auto label = messageTabLabel(id);
+  int index = tabbar->addTab(label);
   tabbar->setTabData(index, QVariant::fromValue(id));
-  tabbar->setTabToolTip(index, msgName(id));
+  tabbar->setTabToolTip(index, label);
   return index;
 }
 
+void MessageView::updateTabLabels() {
+  for (int i = 0; i < tabbar->count(); ++i) {
+    const auto label = messageTabLabel(tabbar->tabData(i).value<MessageId>());
+    if (label != tabbar->tabText(i)) {
+      tabbar->setTabText(i, label);
+      tabbar->setTabToolTip(i, label);
+    }
+  }
+}
+
 void MessageView::setMessage(const MessageId& message_id) {
-  if (std::exchange(msg_id, message_id) == message_id) return;
+  if (has_open_message && msg_id == message_id) return;
+  msg_id = message_id;
+  has_open_message = true;
 
   tabbar->blockSignals(true);
   int index = findOrAddTab(message_id);
@@ -177,10 +260,16 @@ void MessageView::setMessage(const MessageId& message_id) {
 }
 
 void MessageView::resetState() {
-  msg_id = MessageId();
+  closed_tabs.clear();
   tabbar->blockSignals(true);
   while (tabbar->count()) tabbar->removeTab(0);
   tabbar->blockSignals(false);
+  clearMessage();
+}
+
+void MessageView::clearMessage() {
+  msg_id = MessageId();
+  has_open_message = false;
   binary_model->setMessage({});
   signal_editor->clearMessage();
   message_history->clearMessage();
@@ -213,6 +302,7 @@ void MessageView::restoreTabs(const QString& active_msg_id, const QStringList& m
 }
 
 void MessageView::refresh() {
+  updateTabLabels();
   QStringList warnings;
   auto msg = GetDBC()->msg(msg_id);
   if (msg) {

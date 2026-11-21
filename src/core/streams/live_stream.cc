@@ -34,8 +34,8 @@ struct LiveStream::Logger {
   uint64_t start_ts;
 };
 
-LiveStream::LiveStream(QObject* parent) : AbstractStream(parent) {
-  if (settings.log_livestream) {
+LiveStream::LiveStream(QObject* parent, bool enable_logging) : AbstractStream(parent) {
+  if (enable_logging && settings.log_livestream) {
     logger_ = std::make_unique<Logger>();
   }
   stream_thread_ = new QThread(this);

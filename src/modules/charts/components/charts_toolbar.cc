@@ -4,6 +4,7 @@
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QMenu>
+#include <QSignalBlocker>
 #include <QStyle>
 
 #include "modules/settings/settings.h"
@@ -17,20 +18,29 @@ ChartsToolBar::ChartsToolBar(QWidget* parent) : QWidget(parent) {
 
   createActions(hl);
 
-  // Preserve original config logic
-  int max_chart_range = std::clamp(settings.chart_range, 1, settings.max_cached_minutes * 60);
-  range_slider->setValue(max_chart_range);
+  setChartDuration(settings.chart_range, true);
   setIsDocked(true);
   updateState(0);
 
   // Signal Connections
   connect(reset_zoom_btn, &QToolButton::clicked, this, &ChartsToolBar::zoomReset);
   connect(&settings, &Settings::changed, this, &ChartsToolBar::settingChanged);
-  connect(range_slider, &QSlider::valueChanged, this, [=](int value) {
-    settings.chart_range = value;
-    range_lb->setText(utils::formatSeconds(value));
-    emit rangeChanged(value);
-  });
+  connect(range_slider, &QSlider::valueChanged, this, [this](int seconds) { setChartDuration(seconds, false); });
+  connect(range_input, &QSpinBox::valueChanged, this, [this](int seconds) { setChartDuration(seconds, true); });
+}
+
+void ChartsToolBar::setChartDuration(int seconds, bool move_slider) {
+  seconds = std::clamp(seconds, range_input->minimum(), range_input->maximum());
+  const QSignalBlocker input_blocker(range_input);
+  range_input->setValue(seconds);
+  if (move_slider) {
+    const QSignalBlocker slider_blocker(range_slider);
+    range_slider->setValue(seconds);
+  }
+  if (settings.chart_range != seconds) {
+    settings.chart_range = seconds;
+    emit rangeChanged(seconds);
+  }
 }
 
 void ChartsToolBar::createActions(QHBoxLayout* hl) {
@@ -112,14 +122,22 @@ void ChartsToolBar::createColumnMenu() {
 }
 
 void ChartsToolBar::setupZoomControls(QHBoxLayout* hl) {
-  hl->addWidget(range_lb = new QLabel(this));
+  const int max_seconds = std::max(1, settings.max_cached_minutes * 60);
+  range_input = new QSpinBox(this);
+  range_input->setRange(1, max_seconds);
+  range_input->setSuffix(tr(" s"));
+  range_input->setButtonSymbols(QAbstractSpinBox::NoButtons);
+  range_input->setKeyboardTracking(false);
+  range_input->setAccessibleName(tr("Chart duration"));
+  range_input->setToolTip(tr("Type the chart window duration in seconds."));
+  hl->addWidget(range_input);
 
-  range_slider = new LogSlider(1000, Qt::Horizontal, this);
+  range_slider = new QSlider(Qt::Horizontal, this);
   range_slider->setFocusPolicy(Qt::NoFocus);
   range_slider->setToolTip(tr("Chart Range\nAdjust the time window of data displayed."));
   range_slider->setMaximumWidth(200);
   range_slider->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-  range_slider->setRange(1, settings.max_cached_minutes * 60);
+  range_slider->setRange(1, max_seconds);
   range_slider->setSingleStep(1);
   range_slider->setPageStep(60);
   hl->addWidget(range_slider, 2);
@@ -146,12 +164,10 @@ void ChartsToolBar::setupZoomControls(QHBoxLayout* hl) {
 void ChartsToolBar::updateState(int chart_count) {
   title_label->setText(tr("Charts: %1").arg(chart_count));
   columns_btn->setText(QString::number(settings.chart_column_count));
-  range_lb->setText(utils::formatSeconds(settings.chart_range));
-
   auto* stream = StreamManager::stream();
   auto time_range = stream->timeRange();
   bool is_zoomed = time_range.has_value();
-  range_lb->setVisible(!is_zoomed);
+  range_input->setVisible(!is_zoomed);
   range_slider->setVisible(!is_zoomed);
   undo_btn->setVisible(is_zoomed);
   redo_btn->setVisible(is_zoomed);
@@ -176,8 +192,12 @@ void ChartsToolBar::zoomReset() {
 void ChartsToolBar::settingChanged() {
   undo_btn->setIcon("undo-2");
   redo_btn->setIcon("redo-2");
-  int max_sec = settings.max_cached_minutes * 60;
+  const int max_sec = std::max(1, settings.max_cached_minutes * 60);
   if (range_slider->maximum() != max_sec) {
+    const QSignalBlocker slider_blocker(range_slider);
+    const QSignalBlocker input_blocker(range_input);
     range_slider->setRange(1, max_sec);
+    range_input->setRange(1, max_sec);
+    setChartDuration(settings.chart_range, true);
   }
 }

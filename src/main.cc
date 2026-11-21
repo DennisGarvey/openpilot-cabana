@@ -2,15 +2,25 @@
 #include <QCommandLineParser>
 
 #include "core/streams/device_stream.h"
+#include "core/streams/custom_usb_serial_stream.h"
 #include "core/streams/panda_stream.h"
 #include "core/streams/replay_stream.h"
 #include "core/streams/socket_can_stream.h"
 #include "mainwin.h"
 #include "modules/settings/settings.h"
+#include "modules/dbc/startup_dbcs.h"
 #include "utils/system_signal_handler.h"
 #include "utils/util.h"
 
 static AbstractStream* createStream(QCommandLineParser& p, QApplication* app) {
+  if (p.isSet("custom-usb-serial")) {
+    try {
+      return new CustomUsbSerialStream(app, p.value("custom-usb-serial"));
+    } catch (const std::exception& e) {
+      qWarning() << e.what();
+      return nullptr;
+    }
+  }
   if (p.isSet("msgq") || p.isSet("zmq")) return new DeviceStream(app, p.value("zmq"));
 
   if (p.isSet("panda") || p.isSet("panda-serial")) {
@@ -63,11 +73,12 @@ int main(int argc, char* argv[]) {
       {"dcam", "load driver camera"},
       {"msgq", "read can messages from the msgq"},
       {"panda", "read can messages from panda"},
+      {"custom-usb-serial", "read CAN frames from a Custom USB Serial stream", "serial-port"},
       {{"panda-serial", "s"}, "read can messages from panda with given serial", "panda-serial"},
       {{"zmq", "z"}, "read can messages from zmq at the specified ip-address", "ip-address"},
       {{"data_dir", "d"}, "local directory with routes", "data_dir"},
       {"no-vipc", "do not output video"},
-      {{"dbc", "b"}, "dbc file to open", "dbc"}
+      {{"dbc", "b"}, "DBC file or BUS:FILE assignment; repeat for multiple buses", "[bus:]file"}
   });
 
   if (SocketCanStream::available()) {
@@ -76,9 +87,17 @@ int main(int argc, char* argv[]) {
 
   parser.process(app);
 
+  StartupDbcs dbcs;
+  try {
+    dbcs = parseStartupDbcs(parser.values("dbc"));
+  } catch (const std::exception& e) {
+    qCritical().noquote() << e.what();
+    return 2;
+  }
+
   AbstractStream* stream = createStream(parser, &app);
   {
-    MainWindow w(stream, parser.value("dbc"));
+    MainWindow w(stream, dbcs.global_file, dbcs.bus_files);
     app.exec();
   }
   return 0;

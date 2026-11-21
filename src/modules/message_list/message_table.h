@@ -13,4 +13,7 @@ class MessageTable : public QTreeView {
   void dataChanged(const QModelIndex& topLeft, const QModelIndex& bottomRight,
                    const QVector<int>& roles = {}) override;
   void wheelEvent(QWheelEvent* event) override;
+
+ private:
+  double horizontal_scroll_remainder_ = 0.0;
 };

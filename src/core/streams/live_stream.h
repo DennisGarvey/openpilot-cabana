@@ -11,7 +11,7 @@ class LiveStream : public AbstractStream {
   Q_OBJECT
 
  public:
-  LiveStream(QObject* parent);
+  LiveStream(QObject* parent, bool enable_logging = true);
   ~LiveStream() override;
   void start() override;
   void stop();

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <vector>
 
 #include "modules/charts/charts_panel.h"
 #include "modules/inspector/binary/binary_model.h"
@@ -22,15 +23,21 @@ class MessageView : public QWidget {
   void restoreTabs(const QString& active_msg_id, const QStringList& msg_ids);
   void resetState();
   void toggleCenterOrientation();
+  void closeCurrentTab();
+  void reopenClosedTab();
 
  signals:
   void requestDockCompression();
   void activeMessageChanged(const MessageId& id);
+  void lastTabClosed();
 
  private:
   void setupConnections();
   QWidget* createToolBar();
   int findOrAddTab(const MessageId& id);
+  void updateTabLabels();
+  void closeTab(int index);
+  void clearMessage();
   void showTabBarContextMenu(const QPoint& pt);
   void editMsg();
   void removeMsg();
@@ -38,6 +45,12 @@ class MessageView : public QWidget {
   void updateOrientationButton();
 
   MessageId msg_id;
+  bool has_open_message = false;
+  struct ClosedTab {
+    MessageId id;
+    int index;
+  };
+  std::vector<ClosedTab> closed_tabs;
   QLabel *warning_icon, *warning_label;
   ElidedLabel* name_label;
   QWidget* warning_widget;

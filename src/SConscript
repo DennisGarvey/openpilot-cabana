@@ -12,7 +12,7 @@ qt_env['QT_MOCFROMHDIR'] = os.path.join(build_dir, 'moc')
 qt_env['QT_MOCFROMCXXDIR'] = os.path.join(build_dir, 'moc')
 
 qt_env["CPPPATH"] += ["#"]
-qt_modules = ["Widgets", "Gui", "Core", "Concurrent", "DBus", "Svg", "OpenGL", "OpenGLWidgets", "PrintSupport", "Charts", "SerialBus", "Network"]
+qt_modules = ["Widgets", "Gui", "Core", "Concurrent", "DBus", "Svg", "OpenGL", "OpenGLWidgets", "PrintSupport", "Charts", "SerialBus", "SerialPort", "Network"]
 
 qt_libs = []
 qt_host_bins = ""
@@ -23,9 +23,12 @@ if arch == "Darwin":
     qt_dirs = [os.path.join(qt_env['QTDIR'], "include")]
     qt_dirs += [f"{qt_env['QTDIR']}/include/Qt{m}" for m in qt_modules]
     qt_env["LINKFLAGS"] += ["-F" + os.path.join(qt_env['QTDIR'], "lib")]
+    qt_env["CCFLAGS"] += ["-F" + os.path.join(qt_env['QTDIR'], "lib")]
     qt_env["FRAMEWORKS"] += [f"Qt{m}" for m in qt_modules] + ["OpenGL"]
     qt_env.AppendENVPath('PATH', os.path.join(qt_env['QTDIR'], "bin"))
     qt_host_bins = os.path.join(qt_env['QTDIR'], "bin")
+    if not os.path.isfile(os.path.join(qt_host_bins, "rcc")):
+        qt_host_bins = os.path.join(brew_prefix, "opt", "qtbase", "share", "qt", "libexec")
 else:
     # Use qmake6 to find paths
     qt_install_prefix = subprocess.check_output(['qmake6', '-query', 'QT_INSTALL_PREFIX'], encoding='utf8').strip()
@@ -112,3 +115,13 @@ cabana_lib = cabana_env.Library(
     FRAMEWORKS=base_frameworks,
 )
 cabana_env.Program('#cabana', ['#build/main.cc', cabana_lib, assets], LIBS=cabana_libs, FRAMEWORKS=base_frameworks)
+
+if any(str(target).endswith('test_custom_usb_serial_stream') for target in COMMAND_LINE_TARGETS):
+    cabana_env.VariantDir('#build/tests', '#tests', duplicate=0)
+    cabana_env.Program('#build/test_custom_usb_serial_stream', ['#build/tests/test_custom_usb_serial_stream.cc', cabana_lib, assets],
+                       LIBS=cabana_libs, FRAMEWORKS=base_frameworks)
+
+if any(str(target).endswith('test_startup_dbcs') for target in COMMAND_LINE_TARGETS):
+    cabana_env.VariantDir('#build/tests', '#tests', duplicate=0)
+    cabana_env.Program('#build/test_startup_dbcs', ['#build/tests/test_startup_dbcs.cc', cabana_lib, assets],
+                       LIBS=cabana_libs, FRAMEWORKS=base_frameworks)

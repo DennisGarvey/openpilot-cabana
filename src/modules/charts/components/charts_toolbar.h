@@ -2,6 +2,7 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QSpinBox>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QWidget>
@@ -33,12 +34,13 @@ class ChartsToolBar : public QWidget {
   void createTypeMenu();
   void createColumnMenu();
   void setupZoomControls(QHBoxLayout* hl);
+  void setChartDuration(int seconds, bool move_slider);
 
  protected:
   // UI Elements
   QLabel* title_label;
-  QLabel* range_lb;
-  LogSlider* range_slider;
+  QSpinBox* range_input;
+  QSlider* range_slider;
 
   // Custom ToolButtons (Replaces QActions)
   ToolButton* chart_type_btn;
