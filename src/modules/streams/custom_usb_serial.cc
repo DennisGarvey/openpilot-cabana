@@ -33,6 +33,20 @@ QByteArray signalMask(const dbc::Signal& signal, int data_size) {
   return mask;
 }
 
+const dbc::Signal* counterSignal(const dbc::Msg* message, const dbc::Signal* requested) {
+  if (!message) return nullptr;
+  static const QRegularExpression counter_name(QStringLiteral("(?:^|_)counter(?:$|_)|counter$"),
+                                                QRegularExpression::CaseInsensitiveOption);
+  const dbc::Signal* found = nullptr;
+  for (const auto* signal : message->getSignals()) {
+    if (signal == requested || signal->size < 1 || signal->size > 64 ||
+        !counter_name.match(signal->name).hasMatch()) continue;
+    if (found) return nullptr;
+    found = signal;
+  }
+  return found;
+}
+
 struct SendStatus {
   using TxState = CustomUsbSerialStream::TxState;
 
@@ -363,10 +377,12 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   auto* form = new QFormLayout(&dialog);
   auto* value = new QLineEdit(&dialog);
   auto* choices = new QComboBox(&dialog);
+  auto* increase_counter = new QCheckBox(tr("Increase from last received frame"), &dialog);
   choices->setPlaceholderText(tr("Choose a value"));
   form->addRow(tr("Signal"), new QLabel(signal_name + QStringLiteral(" · ") + id.toString(), &dialog));
   form->addRow(tr("New value"), value);
   form->addRow(tr("New value"), choices);
+  form->addRow(tr("Counter"), increase_counter);
   const SendControls controls(dialog, *form, usb_stream, true);
   SendStatus status(dialog, *form);
   form->setSizeConstraint(QLayout::SetFixedSize);
@@ -376,6 +392,12 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     return message ? message->sig(signal_name) : nullptr;
   };
   const auto* initial_signal = getSignal();
+  const auto* initial_message = GetDBC()->msg(id);
+  const auto* initial_counter = counterSignal(initial_message, initial_signal);
+  const QString counter_name = initial_counter ? initial_counter->name : QString();
+  increase_counter->setEnabled(initial_counter && stream && stream->counterSupported());
+  increase_counter->setToolTip(initial_counter ? tr("Increment %1, wrapping at its signal width.").arg(counter_name)
+                                               : tr("This message does not have one identifiable counter signal."));
   const ValueTable value_table = initial_signal ? initial_signal->value_table : ValueTable{};
   const bool has_choices = !value_table.empty();
   form->setRowVisible(choices, has_choices);
@@ -403,7 +425,14 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     const bool has_value = has_choices ? choices->currentIndex() >= 0 : !value->text().trimmed().isEmpty();
     const bool mux_supported = !(controls.timed() && signal && signal->multiplexor) ||
                                (stream && stream->transmitFeedbackSupported());
-    controls.refresh(stream, has_frame && has_value && mux_supported);
+    const bool counter_supported = initial_counter && stream && stream->counterSupported();
+    controls.refresh(stream, has_frame && has_value && mux_supported &&
+                             (!increase_counter->isChecked() || counter_supported));
+    increase_counter->setEnabled(counter_supported && !stream->repeatPending());
+    if (initial_counter) {
+      increase_counter->setToolTip(counter_supported ? tr("Increment %1, wrapping at its signal width.").arg(counter_name)
+                                                     : tr("Waiting for USB transmit firmware."));
+    }
 
     TxState state = TxState::Waiting;
     QString message;
@@ -453,8 +482,18 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     } else {
       const auto timing = controls.timing();
       const auto selector = timing && signal->multiplexor ? signalMask(*signal->multiplexor, frame->data.size()) : QByteArray();
+      std::optional<CustomUsbSerialStream::Counter> counter;
+      if (increase_counter->isChecked()) {
+        const auto* message = GetDBC()->msg(id);
+        const auto* counter_signal = message ? message->sig(counter_name) : nullptr;
+        if (counter_signal) {
+          counter = CustomUsbSerialStream::Counter{static_cast<uint16_t>(counter_signal->start_bit),
+                                                   static_cast<uint8_t>(counter_signal->size),
+                                                   counter_signal->is_little_endian};
+        }
+      }
       if (!stream->sendFrame(id.source, id.address, frame->flags, frame->data, frame->boot_id,
-                             timing, signalMask(*signal, frame->data.size()), selector)) {
+                             timing, signalMask(*signal, frame->data.size()), selector, counter)) {
         input_error = tr("The frame could not be queued. Check the USB connection and try again.");
       } else {
         submitted = true;
@@ -472,6 +511,7 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   };
   connect(choices, &QComboBox::currentIndexChanged, &dialog, value_changed);
   connect(value, &QLineEdit::textChanged, &dialog, value_changed);
+  connect(increase_counter, &QCheckBox::toggled, &dialog, value_changed);
   timer.start(100);
   refresh();
   if (!has_choices) value->selectAll();
