@@ -13,6 +13,7 @@ class CustomUsbSerialWidget : public AbstractStreamWidget {
   AbstractStream* open() override;
   static void showSendSignalDialog(QWidget* parent, CustomUsbSerialStream* stream,
                                    const MessageId& id, const QString& signal_name);
+  static void showUtilizationDialog(QWidget* parent, CustomUsbSerialStream* stream);
   static void showSendFrameDialog(QWidget* parent, CustomUsbSerialStream* stream);
 
  private:

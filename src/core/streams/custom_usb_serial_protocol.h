@@ -11,6 +11,8 @@
  * data[length], crc:u16. Status: queue_drops:u32, overflow_events:u32,
  * usb_aborts:u32, crc:u16. Sequence counts received frames per bus, before
  * queueing. Overflow events indicate at least one lost frame, not an exact count.
+ * Utilization (bus, flags and sequence zero): serial, CPU cores 0/1, shared
+ * SPI, and CAN buses 0/1, each as u16 per mille over the last sample interval.
  * Flags: bit0 extended, bit1 RTR, bit2 FD, bit3 BRS.
  * USB transmit requests use the Frame layout with the adapter's current boot ID
  * and a nonzero request sequence. TX results carry one status byte at offset
@@ -35,6 +37,8 @@
 #define DK_TX_REPEAT_RESULT 6
 #define DK_TX_AUTO 7
 #define DK_TX_AUTO_RESULT 8
+#define DK_UTILIZATION 9
+#define DK_UTILIZATION_SIZE 32
 #define DK_TX_READY 0
 #define DK_TX_QUEUED 1
 #define DK_TX_REJECTED 2
@@ -144,6 +148,12 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
         dk_get(raw + out - 2, 2) != dk_crc(raw, out - 2)) return 0;
     if (raw[1] == DK_STATUS)
         return out == DK_STATUS_SIZE + 2 && raw[3] == 0 ? out : 0;
+    if (raw[1] == DK_UTILIZATION) {
+        if (out != DK_UTILIZATION_SIZE + 2 || raw[2] || raw[3] || dk_get(raw + 8, 4)) return 0;
+        for (size_t i = 20; i < DK_UTILIZATION_SIZE; i += 2)
+            if (dk_get(raw + i, 2) > 1000) return 0;
+        return out;
+    }
     if (raw[1] == DK_TX_RESULT)
         return out == 23 && raw[3] == 0 && raw[20] <= DK_TX_PREVIOUS_FAILED &&
             ((dk_get(raw + 8, 4) == 0) == (raw[20] == DK_TX_READY)) ? out : 0;

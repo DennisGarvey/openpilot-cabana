@@ -13,6 +13,14 @@ class CustomUsbSerialStream : public LiveStream {
   QString routeName() const override { return QStringLiteral("Custom USB Serial: %1").arg(port_); }
   QString captureStatus() const;
   QString captureDetails() const;
+  struct Utilization {
+    uint16_t serial;
+    uint16_t cpu[2];
+    uint16_t spi;
+    uint16_t can[2];
+  };
+  std::optional<Utilization> utilization() const;
+
   struct CapturedFrame {
     QByteArray data;
     uint8_t flags;
@@ -57,6 +65,8 @@ class CustomUsbSerialStream : public LiveStream {
   QString tx_status_;
   TxState tx_state_ = TxState::Ready;
   std::unordered_map<MessageId, std::deque<CapturedFrame>> recent_data_frames_;
+  Utilization utilization_{};
+  QDeadlineTimer utilization_expiry_{0};
   uint64_t frames_[2] = {}, gaps_[2] = {};
   uint64_t queue_drops_[2] = {}, overflows_[2] = {}, usb_aborts_ = 0;
   uint64_t corrupt_ = 0, resets_ = 0, last_record_ms_ = 0;

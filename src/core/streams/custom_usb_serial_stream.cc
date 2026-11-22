@@ -15,6 +15,7 @@ CustomUsbSerialStream::CustomUsbSerialStream(QObject* parent, const QString& por
 void CustomUsbSerialStream::setError(const QString& error) {
   std::lock_guard lock(stats_mutex_);
   error_ = error;
+  utilization_expiry_ = QDeadlineTimer(0);
   tx_capability_ = QDeadlineTimer(0);
   tx_request_.clear();
   tx_status_ = tx_in_flight_ ? tr("USB connection lost. Transmission outcome unknown.") : error;
@@ -58,6 +59,12 @@ QString CustomUsbSerialStream::captureDetails() const {
       .arg(usb_aborts_)
       .arg(corrupt_)
       .arg(resets_);
+}
+
+std::optional<CustomUsbSerialStream::Utilization> CustomUsbSerialStream::utilization() const {
+  std::lock_guard lock(stats_mutex_);
+  if (utilization_expiry_.hasExpired()) return std::nullopt;
+  return utilization_;
 }
 
 std::optional<CustomUsbSerialStream::CapturedFrame> CustomUsbSerialStream::latestDataFrame(
@@ -282,6 +289,7 @@ void CustomUsbSerialStream::streamThread() {
         if (boot != tx_boot_id_) {
           tx_capability_ = QDeadlineTimer(0);
           tx_boot_id_ = boot;
+          utilization_expiry_ = QDeadlineTimer(0);
           repeat_supported_ = automatic_supported_ = false;
           clearRepeat();
           tx_request_.clear();
@@ -356,6 +364,16 @@ void CustomUsbSerialStream::streamThread() {
             tx_in_flight_ = 0;
             clearRepeat();
           }
+          continue;
+        }
+        if (raw[1] == DK_UTILIZATION) {
+          utilization_ = {
+              static_cast<uint16_t>(dk_get(raw + 20, 2)),
+              {static_cast<uint16_t>(dk_get(raw + 22, 2)), static_cast<uint16_t>(dk_get(raw + 24, 2))},
+              static_cast<uint16_t>(dk_get(raw + 26, 2)),
+              {static_cast<uint16_t>(dk_get(raw + 28, 2)), static_cast<uint16_t>(dk_get(raw + 30, 2))},
+          };
+          utilization_expiry_ = QDeadlineTimer(3000);
           continue;
         }
         if (!have_boot || boot != boot_id) {

@@ -93,6 +93,7 @@ def main():
             stream += frame(0, 1, 100, 0x203, b'\x01', boot=124)
             stream += frame(1, 1, 110, 0x22222, b'\xa5' * 64, 13, boot=124)
             stream += frame(1, 2, 120, 0x22222, b'\xa5' * 63 + b'\xa4', 13, boot=124)
+            stream += encode(struct.pack('<BBBBIIQ6H', 1, 9, 0, 0, 124, 0, 130, 123, 234, 345, 456, 567, 678))
             # Exercise arbitrary serial boundaries, including a one-byte read.
             start = 0
             for size in (1, 7, 2, 29, 1, 64, 3, 5, 200, len(stream)):

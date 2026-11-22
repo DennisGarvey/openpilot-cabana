@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
@@ -149,6 +150,65 @@ AbstractStream* CustomUsbSerialWidget::open() {
     QMessageBox::warning(this, tr("Custom USB Serial"), QString::fromUtf8(e.what()));
     return nullptr;
   }
+}
+
+void CustomUsbSerialWidget::showUtilizationDialog(QWidget* parent, CustomUsbSerialStream* usb_stream) {
+  const auto name = QStringLiteral("usb_stream_utilization");
+  if (auto* existing = parent->findChild<QDialog*>(name, Qt::FindDirectChildrenOnly)) {
+    existing->showNormal();
+    existing->raise();
+    existing->activateWindow();
+    return;
+  }
+  QPointer<CustomUsbSerialStream> stream(usb_stream);
+  auto* dialog = new QDialog(parent, Qt::Window);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setObjectName(name);
+  connect(usb_stream, &QObject::destroyed, dialog, &QDialog::close);
+  dialog->setWindowTitle(tr("USB Stream Utilization"));
+  auto* form = new QFormLayout(dialog);
+  auto* serial = new QLabel(dialog);
+  auto* cpu0 = new QLabel(dialog);
+  auto* cpu1 = new QLabel(dialog);
+  auto* spi = new QLabel(dialog);
+  auto* can0 = new QLabel(dialog);
+  auto* can1 = new QLabel(dialog);
+  form->addRow(tr("Serial utilization"), serial);
+  form->addRow(tr("CPU utilization (core 0)"), cpu0);
+  form->addRow(tr("CPU utilization (core 1)"), cpu1);
+  form->addRow(tr("SPI utilization (shared)"), spi);
+  form->addRow(tr("CAN bus 0 utilization"), can0);
+  form->addRow(tr("CAN bus 1 utilization"), can1);
+  serial->setToolTip(tr("Read and write throughput relative to the 8 Mbit/s logical serial setting."));
+  spi->setToolTip(tr("Time spent clocking the shared SPI bus."));
+  const QString can_hint = tr("Estimated from received frames and queued sends. Includes a bit-stuffing allowance.");
+  can0->setToolTip(can_hint);
+  can1->setToolTip(can_hint);
+  auto* status = new QLabel(dialog);
+  form->addRow(status);
+  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+  connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+  form->addRow(buttons);
+
+  auto refresh = [stream, serial, cpu0, cpu1, spi, can0, can1, status] {
+    const auto values = stream ? stream->utilization() : std::nullopt;
+    auto format = [&](uint16_t value) {
+      return values ? tr("%L1%").arg(value / 10.0, 0, 'f', 1) : QStringLiteral("—");
+    };
+    const auto sample = values.value_or(CustomUsbSerialStream::Utilization{});
+    serial->setText(format(sample.serial));
+    cpu0->setText(format(sample.cpu[0]));
+    cpu1->setText(format(sample.cpu[1]));
+    spi->setText(format(sample.spi));
+    can0->setText(format(sample.can[0]));
+    can1->setText(format(sample.can[1]));
+    status->setText(!stream ? tr("Stream closed.") : values ? QString() : tr("Waiting for utilization data from the adapter."));
+  };
+  auto* timer = new QTimer(dialog);
+  connect(timer, &QTimer::timeout, dialog, refresh);
+  refresh();
+  timer->start(500);
+  dialog->show();
 }
 
 void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerialStream* usb_stream) {

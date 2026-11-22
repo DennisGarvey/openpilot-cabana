@@ -1,5 +1,7 @@
 #include <QApplication>
 #include <QDir>
+#include <QDialog>
+#include <QLabel>
 #include <QTimer>
 #include <iostream>
 
@@ -151,6 +153,30 @@ int main(int argc, char** argv) {
     if (!status.contains("gaps:1") || !status.contains("bad:2") || !status.contains("Q:1") ||
         !status.contains("FIFO:2") || !details.contains("device restarts: 1")) {
       app.exit(5);
+      return;
+    }
+    const auto utilization = stream.utilization();
+    if (!utilization || utilization->serial != 123 || utilization->cpu[0] != 234 ||
+        utilization->cpu[1] != 345 || utilization->spi != 456 || utilization->can[0] != 567 ||
+        utilization->can[1] != 678) {
+      app.exit(14);
+      return;
+    }
+    QWidget owner;
+    CustomUsbSerialWidget::showUtilizationDialog(&owner, &stream);
+    CustomUsbSerialWidget::showUtilizationDialog(&owner, &stream);
+    const auto dialogs = owner.findChildren<QDialog*>(Qt::FindDirectChildrenOnly);
+    if (dialogs.size() != 1 || !dialogs.front()->isVisible() || dialogs.front()->isModal() ||
+        dialogs.front()->windowType() != Qt::Window ||
+        dialogs.front()->windowFlags().testFlag(Qt::WindowStaysOnTopHint)) {
+      app.exit(15);
+      return;
+    }
+    QStringList labels;
+    for (auto* label : dialogs.front()->findChildren<QLabel*>()) labels.append(label->text());
+    if (!labels.contains("SPI utilization (shared)") || !labels.contains("45.6%") ||
+        !labels.contains("CAN bus 1 utilization") || !labels.contains("67.8%")) {
+      app.exit(16);
       return;
     }
     if (!QDir(QString::fromUtf8(argv[2])).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty()) {
