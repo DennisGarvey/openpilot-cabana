@@ -215,6 +215,12 @@ frames sharing the same numeric ID appear together. RTR frames have an empty
 payload. Timestamps are software receive times, made nondecreasing across RX task
 ordering and device restarts.
 
+Transmit-capable firmware adds one-shot frame sending and DBC signal sending.
+Signal values can be sent once, at a fixed rate, or automatically restored when
+another node changes them. Timed signal sends preserve newly received values in
+the rest of the frame and can be cancelled before their duration ends. Fixed-rate
+transmission supports frequencies up to 10 Hz.
+
 Build and run the simulated serial integration test:
 
 ```sh

@@ -44,11 +44,18 @@ int main(int argc, char** argv) {
   // macOS PTYs do not implement the custom-speed ioctl used by USB devices.
   CustomUsbSerialStream stream(&app, QString::fromUtf8(argv[1]), 115200);
   stream.start();
+  const QByteArray repeat_test = qgetenv("CABANA_TEST_TX_REPEAT");
+  const bool repeat = !repeat_test.isEmpty();
+  const bool automatic = repeat_test.startsWith("automatic");
   bool sent = false;
   QTimer send_timer;
   QObject::connect(&send_timer, &QTimer::timeout, &app, [&] {
     if (!stream.txReady()) return;
     send_timer.stop();
+    if ((automatic ? stream.automaticSupported() : stream.repeatSupported()) != repeat) {
+      app.exit(13);
+      return;
+    }
     if (stream.sendFrame(1, 0x1abcde, 13, QByteArray(10, 0))) {
       app.exit(7);  // Ten bytes cannot be encoded in a CAN FD DLC.
       return;
@@ -91,24 +98,40 @@ int main(int argc, char** argv) {
       app.exit(12);
       return;
     }
+    std::optional<CustomUsbSerialStream::RepeatTiming> timing;
+    if (repeat) timing = CustomUsbSerialStream::RepeatTiming{automatic ? 0u : 5u, 1000, automatic};
+    QByteArray signal_mask(64, 0);
+    signal_mask[0] = char(0xff);
+    signal_mask[1] = char(0xf0);
+    signal_mask[63] = 1;
     sent = stream.sendFrame(multiplexed_id.source, multiplexed_id.address, matching->flags,
-                            matching->data, matching->boot_id);
+                            matching->data, matching->boot_id, timing, signal_mask);
+    if (repeat_test.endsWith("cancel")) {
+      QTimer::singleShot(550, &app, [&] {
+        if (!stream.repeatPending()) app.exit(14);
+        stream.cancelRepeat();
+      });
+    }
     if (!sent || stream.sendFrame(0, 0x123, 0, QByteArray())) app.exit(8);
   });
   send_timer.start(20);
   QTimer::singleShot(2200, &app, [&] {
-    const QString expected_status = qEnvironmentVariableIsSet("CABANA_TEST_TX_FIFO_FULL")
-                                        ? "CAN bus 1 transmit queue is full"
-                                        : "Queued by the USB adapter";
-    if (!sent || !stream.txStatus().contains(expected_status)) {
+    QString expected_status = "Queued by the USB adapter";
+    if (repeat_test == "cancel") expected_status = "Fixed-rate send cancelled";
+    else if (repeat_test == "automatic-cancel") expected_status = "Automatic send cancelled";
+    else if (automatic) expected_status = "Automatic send finished";
+    else if (repeat) expected_status = "Fixed-rate send finished";
+    else if (qEnvironmentVariableIsSet("CABANA_TEST_TX_FIFO_FULL")) expected_status = "CAN bus 1 transmit queue is full";
+    if (!sent || stream.repeatPending() || !stream.txStatus().contains(expected_status)) {
       app.exit(9);
       return;
     }
     stream.stop();
     std::cout << stream.captureStatus().toStdString() << '\n' << stream.captureDetails().toStdString() << '\n';
     const auto& events = stream.allEvents();
-    if (events.size() != 8) {
-      std::cerr << "Expected 8 frames, got " << events.size() << '\n';
+    const size_t expected_events = 8;
+    if (events.size() != expected_events) {
+      std::cerr << "Expected " << expected_events << " frames, got " << events.size() << '\n';
       app.exit(1);
       return;
     }

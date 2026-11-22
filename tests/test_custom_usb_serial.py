@@ -46,6 +46,23 @@ def frame(bus, sequence, timestamp, address, data, flags=0, boot=123):
     return encode(struct.pack('<BBBBIIQIB', 1, 0, bus, flags, boot, sequence, timestamp, address, len(data)) + data)
 
 
+def read_record(master, pending):
+    deadline = time.monotonic() + 2
+    while True:
+        while b'\0' in pending:
+            record, _, remaining = pending.partition(b'\0')
+            pending[:] = remaining
+            if record:
+                return decode(record)
+        ready, _, _ = select.select([master], [], [], max(0, deadline - time.monotonic()))
+        assert ready, 'No USB transmit request'
+        pending.extend(os.read(master, 256))
+
+
+def tx_result(master, kind, bus, sequence, code):
+    os.write(master, encode(struct.pack('<BBBBIIQB', 1, kind, bus, 0, 124, sequence, 102, code)))
+
+
 def main():
     root = Path(__file__).resolve().parents[1]
     # Compare the wire implementation with the sibling firmware when available.
@@ -84,27 +101,47 @@ def main():
                     os.write(master, chunk)
                     start += len(chunk)
                     time.sleep(.005)
-            os.write(master, encode(struct.pack('<BBBBIIQB', 1, 3, 0, 0, 124, 0, 101, 0)))
+            repeat = os.environ.get('CABANA_TEST_TX_REPEAT')
+            automatic = bool(repeat and repeat.startswith('automatic'))
+            tx_result(master, 8 if automatic else 3, int(bool(repeat) and not automatic), 0, 0)
             pending = bytearray()
-            while True:
-                ready, _, _ = select.select([master], [], [], 1)
-                assert ready, 'No USB transmit request'
-                pending.extend(os.read(master, 256))
-                records = pending.lstrip(b'\0').split(b'\0', 1)
-                if len(records) == 2:
-                    assert not records[1], 'Unexpected second TX request'
-                    break
-            request = decode(records[0])
-            version, kind, bus, flags, boot, sequence, _, address, length = struct.unpack('<BBBBIIQIB', request[:25])
-            assert (version, kind, bus, flags, boot, address, length) == (1, 2, 1, 13, 124, 0x22222, 64)
-            assert sequence and request[25:] == b'\x12\x35' + b'\xa5' * 62
-            tx_result = 4 if 'CABANA_TEST_TX_FIFO_FULL' in os.environ else 1
-            os.write(master, encode(struct.pack('<BBBBIIQB', 1, 3, 1, 0, 124, sequence, 102, tx_result)))
+            request = read_record(master, pending)
+            version, kind, bus, flags, boot, sequence, timestamp, address, length = struct.unpack(
+                '<BBBBIIQIB', request[:25])
+            expected_kind = 7 if automatic else (4 if repeat else 2)
+            assert (version, kind, bus, flags, boot, address, length) == (1, expected_kind, 1, 13, 124, 0x22222, 64)
+            assert sequence and request[25:89] == b'\x12\x35' + b'\xa5' * 62
+            if repeat:
+                expected_mask = b'\xff\xf0' + b'\0' * 61 + b'\x01'
+                assert request[89:] == expected_mask
+                assert (timestamp & 0xffffffff, timestamp >> 32) == (0 if automatic else 5, 1000)
+                assert kind == (7 if automatic else 4)
+                result_kind = 8 if automatic else 6
+                tx_result(master, result_kind, 1, sequence, 7)
+                control = lambda opcode: struct.pack('<BBBBIIQB', 1, 5, 1, 0, 124, sequence, 0, opcode)
+                assert read_record(master, pending) == control(0)
+                if repeat.endswith('cancel'):
+                    while (record := read_record(master, pending)) == control(0):
+                        pass
+                    assert record == control(1)
+                    tx_result(master, result_kind, 1, sequence, 9)
+                else:
+                    assert read_record(master, pending) == control(0)
+                    tx_result(master, result_kind, 1, sequence, 8)
+                assert not pending.strip(b'\0')
+                ready, _, _ = select.select([master], [], [], .45)
+                assert not ready, 'Unexpected USB request after the fixed-rate send stopped'
+            else:
+                assert not pending.strip(b'\0'), 'Unexpected second TX request'
+                tx_result(master, 3, 1, sequence, 4 if 'CABANA_TEST_TX_FIFO_FULL' in os.environ else 1)
             stdout, stderr = process.communicate(timeout=8)
             print(stdout.decode())
             if process.returncode:
                 raise AssertionError(f'exit={process.returncode}: {stderr.decode()}')
             assert not list(Path(directory).iterdir()), 'Live USB must not write recording files'
+            if repeat:
+                label = 'Automatic' if automatic else 'Fixed-rate'
+                print(f'{label} integration: signal mask, timing, keepalive, and {repeat} passed')
             print('USB transmission integration: invalid length rejected, one outstanding request, multiplexed 64-byte FD payload and status passed')
             print('Serial integration: both buses, FD, RTR, fragmentation, corruption, sequence wrap/gap, reboot, no disk recording passed')
         finally:

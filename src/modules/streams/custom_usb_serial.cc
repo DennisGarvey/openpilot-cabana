@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -17,7 +18,95 @@
 #include <QVBoxLayout>
 
 #include "core/dbc/dbc_manager.h"
+#include "core/streams/custom_usb_serial_protocol.h"
 #include "core/streams/custom_usb_serial_stream.h"
+
+namespace {
+
+QByteArray signalMask(const dbc::Signal& signal, int data_size) {
+  QByteArray mask(data_size, 0);
+  auto add = [&mask](const dbc::Signal& selected) {
+    for (int i = 0; i < selected.size; ++i) {
+      const int bit = selected.getBitIndex(i);
+      if (bit >= 0 && bit / 8 < mask.size()) mask[bit / 8] |= char(1u << (bit % 8));
+    }
+  };
+  add(signal);
+  if (signal.multiplexor) add(*signal.multiplexor);
+  return mask;
+}
+
+struct SendControls {
+  SendControls(QDialog& dialog, QFormLayout& form, CustomUsbSerialStream* stream, bool allow_timed)
+      : mode(new QComboBox(&dialog)), frequency(new QSpinBox(&dialog)), duration(new QDoubleSpinBox(&dialog)),
+        send(new QPushButton(QObject::tr("Send Once"), &dialog)),
+        cancel(new QPushButton(QObject::tr("Cancel Send"), &dialog)), allow_timed(allow_timed) {
+    mode->addItem(QObject::tr("Once"));
+    if (allow_timed) mode->addItems({QObject::tr("Fixed Rate"), QObject::tr("Automatic Retransmission")});
+    frequency->setRange(1, DK_TX_MAX_HZ);
+    frequency->setValue(5);
+    frequency->setSuffix(QStringLiteral(" Hz"));
+    duration->setDecimals(1);
+    duration->setRange(DK_TX_MIN_DURATION_MS / 1000.0, DK_TX_MAX_DURATION_MS / 1000.0);
+    duration->setSingleStep(0.1);
+    duration->setValue(5);
+    duration->setSuffix(QStringLiteral(" s"));
+    send->setAutoDefault(false);
+    cancel->setAutoDefault(false);
+    form.addRow(QObject::tr("Mode"), mode);
+    form.addRow(QObject::tr("Frequency"), frequency);
+    form.addRow(QObject::tr("Duration"), duration);
+    auto* buttons = new QHBoxLayout;
+    buttons->addWidget(send);
+    buttons->addWidget(cancel);
+    form.addRow(buttons);
+
+    auto update_mode = [this, &form] {
+      form.setRowVisible(frequency, fixedRate());
+      form.setRowVisible(duration, timed());
+      send->setText(fixedRate() ? QObject::tr("Start Fixed Rate") :
+                    (automatic() ? QObject::tr("Start Automatic Retransmission") : QObject::tr("Send Once")));
+    };
+    QObject::connect(mode, &QComboBox::currentIndexChanged, &dialog, update_mode);
+    QObject::connect(cancel, &QPushButton::clicked, stream, &CustomUsbSerialStream::cancelRepeat);
+    QObject::connect(&dialog, &QDialog::finished, stream, &CustomUsbSerialStream::cancelRepeat);
+    update_mode();
+  }
+
+  bool fixedRate() const { return mode->currentIndex() == 1; }
+  bool automatic() const { return mode->currentIndex() == 2; }
+  bool timed() const { return fixedRate() || automatic(); }
+
+  std::optional<CustomUsbSerialStream::RepeatTiming> timing() const {
+    if (!timed()) return std::nullopt;
+    return CustomUsbSerialStream::RepeatTiming{automatic() ? 0u : static_cast<unsigned>(frequency->value()),
+                                               static_cast<unsigned>(qRound(duration->value() * 1000)),
+                                               automatic()};
+  }
+
+  void refresh(const CustomUsbSerialStream* stream, bool valid_input) const {
+    const bool fixed_supported = stream && stream->repeatSupported();
+    const bool automatic_supported = stream && stream->automaticSupported();
+    const bool active = stream && stream->repeatPending();
+    mode->setEnabled(allow_timed && (fixed_supported || automatic_supported) && !active);
+    const bool selected_supported = !timed() || (fixedRate() ? fixed_supported : automatic_supported);
+    mode->setToolTip(selected_supported ? QString() :
+                     QObject::tr("This mode requires compatible USB transmit firmware."));
+    frequency->setEnabled(!active);
+    duration->setEnabled(!active);
+    send->setEnabled(valid_input && stream && stream->txReady() && selected_supported);
+    cancel->setVisible(active);
+  }
+
+  QComboBox* mode;
+  QSpinBox* frequency;
+  QDoubleSpinBox* duration;
+  QPushButton* send;
+  QPushButton* cancel;
+  bool allow_timed;
+};
+
+}  // namespace
 
 CustomUsbSerialWidget::CustomUsbSerialWidget(QWidget* parent) : AbstractStreamWidget(parent) {
   auto* layout = new QVBoxLayout(this);
@@ -78,8 +167,6 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
   auto* extended = new QCheckBox(tr("29-bit ID"), &dialog);
   auto* fd = new QCheckBox(tr("CAN FD"), &dialog);
   auto* brs = new QCheckBox(tr("Bit rate switch"), &dialog);
-  auto* send = new QPushButton(tr("Send Once"), &dialog);
-  send->setAutoDefault(false);
   auto* status = new QLabel(&dialog);
   status->setWordWrap(true);
   form->addRow(tr("Bus"), bus);
@@ -89,7 +176,7 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
   form->addRow(extended);
   form->addRow(fd);
   form->addRow(brs);
-  form->addRow(send);
+  const SendControls controls(dialog, *form, usb_stream, false);
   form->addRow(status);
 
   auto populate = [=] {
@@ -117,7 +204,7 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
     fd->setChecked(message->size > 8);
     data->setText(QStringLiteral("00 ").repeated(std::min(message->size, 64u)).trimmed());
   });
-  connect(send, &QPushButton::clicked, &dialog, [=] {
+  connect(controls.send, &QPushButton::clicked, &dialog, [=, &controls] {
     QString hex = data->text();
     hex.remove(QRegularExpression(QStringLiteral("\\s")));
     const QRegularExpression payload_pattern(QStringLiteral("\\A(?:[0-9a-fA-F]{2}){0,64}\\z"));
@@ -127,14 +214,15 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
                           (brs->isChecked() ? 8 : 0);
     if (!stream) return;
     if (!address_ok || !payload_pattern.match(hex).hasMatch() ||
-        !stream->sendFrame(bus->value(), id, flags, QByteArray::fromHex(hex.toLatin1()))) {
-      QMessageBox::warning(send, tr("Frame not queued"),
+        !stream->sendFrame(bus->value(), id, flags, QByteArray::fromHex(hex.toLatin1()),
+                           std::nullopt, controls.timing())) {
+      QMessageBox::warning(controls.send, tr("Frame not queued"),
                            tr("Check the CAN ID, frame format, payload length, and USB transmitter status."));
     }
   });
   QTimer timer;
   auto refresh = [&] {
-    send->setEnabled(stream && stream->txReady());
+    controls.refresh(stream, true);
     status->setText(stream ? stream->txStatus() : tr("USB stream closed."));
     brs->setEnabled(fd->isChecked());
     if (!fd->isChecked()) brs->setChecked(false);
@@ -170,12 +258,10 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   status->setFixedHeight(3 * status->fontMetrics().lineSpacing());
   status_layout->addWidget(indicator);
   status_layout->addWidget(status, 1);
-  auto* send = new QPushButton(tr("Send Once"), &dialog);
-  send->setAutoDefault(false);
   form->addRow(tr("Signal"), new QLabel(signal_name + QStringLiteral(" · ") + id.toString(), &dialog));
   form->addRow(tr("New value"), value);
   form->addRow(tr("New value"), choices);
-  form->addRow(send);
+  const SendControls controls(dialog, *form, usb_stream, true);
   form->addRow(status_area);
   form->setSizeConstraint(QLayout::SetFixedSize);
 
@@ -209,13 +295,15 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     const auto* signal = getSignal();
     const bool has_frame = stream && signal && stream->latestDataFrame(id, signal).has_value();
     const bool has_value = has_choices ? choices->currentIndex() >= 0 : !value->text().trimmed().isEmpty();
-    send->setEnabled(has_frame && has_value && stream->txReady());
+    controls.refresh(stream, has_frame && has_value);
 
     TxState state = TxState::Waiting;
     QString message;
     if (!stream) {
       state = TxState::Error;
       message = tr("USB stream closed.");
+    } else if (stream->repeatPending()) {
+      message = stream->txStatus(&state);
     } else if (!signal) {
       state = TxState::Error;
       message = tr("Signal definition is unavailable.");
@@ -248,7 +336,7 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     status->setToolTip(message);
   };
 
-  connect(send, &QPushButton::clicked, &dialog, [&] {
+  connect(controls.send, &QPushButton::clicked, &dialog, [&] {
     if (!stream) return;
     const auto* signal = getSignal();
     auto frame = signal ? stream->latestDataFrame(id, signal) : std::nullopt;
@@ -266,7 +354,8 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     input_error.clear();
     if (!encoded) {
       input_error = tr("Could not encode the value. Check that it fits the signal.");
-    } else if (!stream->sendFrame(id.source, id.address, frame->flags, frame->data, frame->boot_id)) {
+    } else if (!stream->sendFrame(id.source, id.address, frame->flags, frame->data, frame->boot_id,
+                                  controls.timing(), signalMask(*signal, frame->data.size()))) {
       input_error = tr("The frame could not be queued. Check the USB connection and try again.");
     }
     refresh();

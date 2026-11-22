@@ -20,6 +20,8 @@ void CustomUsbSerialStream::setError(const QString& error) {
   tx_status_ = tx_in_flight_ ? tr("USB connection lost. Transmission outcome unknown.") : error;
   tx_state_ = TxState::Error;
   tx_in_flight_ = 0;
+  repeat_supported_ = automatic_supported_ = false;
+  clearRepeat();
 }
 
 QString CustomUsbSerialStream::captureStatus() const {
@@ -73,7 +75,55 @@ std::optional<CustomUsbSerialStream::CapturedFrame> CustomUsbSerialStream::lates
 
 bool CustomUsbSerialStream::txReady() const {
   std::lock_guard lock(stats_mutex_);
-  return !tx_capability_.hasExpired() && (!tx_in_flight_ || tx_deadline_.hasExpired());
+  return !repeat_active_ && !tx_capability_.hasExpired() &&
+         (!tx_in_flight_ || tx_deadline_.hasExpired());
+}
+
+bool CustomUsbSerialStream::repeatSupported() const {
+  std::lock_guard lock(stats_mutex_);
+  return repeat_supported_ && !tx_capability_.hasExpired();
+}
+
+bool CustomUsbSerialStream::automaticSupported() const {
+  std::lock_guard lock(stats_mutex_);
+  return automatic_supported_ && !tx_capability_.hasExpired();
+}
+
+bool CustomUsbSerialStream::repeatPending() const {
+  std::lock_guard lock(stats_mutex_);
+  return repeat_active_;
+}
+
+void CustomUsbSerialStream::clearRepeat() {
+  repeat_active_ = repeat_cancelled_ = repeat_automatic_ = false;
+}
+
+QByteArray CustomUsbSerialStream::repeatControl(uint8_t opcode) const {
+  uint8_t raw[DK_MAX_RAW] = {DK_VERSION, DK_TX_REPEAT_CONTROL, repeat_bus_};
+  dk_put(raw + 4, tx_boot_id_, 4);
+  dk_put(raw + 8, tx_in_flight_, 4);
+  raw[20] = opcode;
+  uint8_t wire[DK_MAX_WIRE];
+  const size_t size = dk_encode(raw, 21, wire);
+  return QByteArray(1, '\0') + QByteArray(reinterpret_cast<const char*>(wire), size);
+}
+
+void CustomUsbSerialStream::cancelRepeat() {
+  std::lock_guard lock(stats_mutex_);
+  if (!repeat_active_ || repeat_cancelled_) return;
+  if (!tx_request_.isEmpty()) {
+    const bool automatic = repeat_automatic_;
+    tx_request_.clear();
+    tx_in_flight_ = 0;
+    clearRepeat();
+    tx_state_ = TxState::Ready;
+    tx_status_ = automatic ? tr("Automatic send cancelled.") : tr("Fixed-rate send cancelled.");
+  } else {
+    repeat_cancelled_ = true;
+    repeat_deadline_ = QDeadlineTimer(1500);
+    repeat_keepalive_ = QDeadlineTimer(0);
+    tx_status_ = repeat_automatic_ ? tr("Cancelling automatic send…") : tr("Cancelling fixed-rate send…");
+  }
 }
 
 QString CustomUsbSerialStream::txStatus(TxState* state) const {
@@ -83,7 +133,7 @@ QString CustomUsbSerialStream::txStatus(TxState* state) const {
     return message;
   };
   if (!error_.isEmpty()) return result(TxState::Error, tx_status_);
-  if (tx_in_flight_ && tx_deadline_.hasExpired())
+  if (!repeat_active_ && tx_in_flight_ && tx_deadline_.hasExpired())
     return result(TxState::Error, tr("Response timed out. Transmission outcome unknown."));
   if (tx_capability_.hasExpired() && !tx_in_flight_)
     return result(TxState::Waiting, tr("Waiting for USB transmission support."));
@@ -91,24 +141,43 @@ QString CustomUsbSerialStream::txStatus(TxState* state) const {
 }
 
 bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t flags, const QByteArray& data,
-                                     std::optional<uint32_t> expected_boot) {
+                                     std::optional<uint32_t> expected_boot, std::optional<RepeatTiming> repeat,
+                                     QByteArray signal_mask) {
   if (data.size() > 64) return false;
+  if (repeat && signal_mask.isEmpty()) signal_mask.fill(char(0xff), data.size());
+  if (repeat && signal_mask.size() != data.size()) return false;
   std::lock_guard lock(stats_mutex_);
   if (expected_boot && *expected_boot != tx_boot_id_) return false;
-  if (tx_capability_.hasExpired() || (tx_in_flight_ && !tx_deadline_.hasExpired())) return false;
+  if (repeat_active_ || tx_capability_.hasExpired() ||
+      (repeat && (repeat->automatic ? !automatic_supported_ : !repeat_supported_)) ||
+      (tx_in_flight_ && !tx_deadline_.hasExpired())) return false;
   if (++tx_sequence_ == 0) ++tx_sequence_;
-  uint8_t raw[DK_MAX_RAW] = {DK_VERSION, DK_TX_REQUEST, bus, flags};
+  const uint8_t type = !repeat ? DK_TX_REQUEST : (repeat->automatic ? DK_TX_AUTO : DK_TX_REPEAT);
+  uint8_t raw[DK_MAX_RAW] = {DK_VERSION, type, bus, flags};
   dk_put(raw + 4, tx_boot_id_, 4);
   dk_put(raw + 8, tx_sequence_, 4);
+  if (repeat) {
+    dk_put(raw + 12, repeat->frequency_hz, 4);
+    dk_put(raw + 16, repeat->duration_ms, 4);
+  }
   dk_put(raw + 20, address, 4);
   raw[24] = data.size();
   memcpy(raw + 25, data.constData(), data.size());
+  if (repeat) memcpy(raw + 25 + data.size(), signal_mask.constData(), signal_mask.size());
   uint8_t wire[DK_MAX_WIRE], decoded[DK_MAX_RAW];
-  size_t size = dk_encode(raw, 25 + data.size(), wire);
+  size_t size = dk_encode(raw, 25 + data.size() * (repeat ? 2 : 1), wire);
   if (!size || !dk_decode(wire, size - 1, decoded)) return false;
   tx_request_ = QByteArray(1, '\0') + QByteArray(reinterpret_cast<const char*>(wire), size);
   tx_in_flight_ = tx_sequence_;
   tx_deadline_ = QDeadlineTimer(1500);
+  if (repeat) {
+    repeat_active_ = true;
+    repeat_automatic_ = repeat->automatic;
+    repeat_bus_ = bus;
+    repeat_duration_ms_ = repeat->duration_ms;
+    repeat_deadline_ = tx_deadline_;
+    repeat_keepalive_ = QDeadlineTimer(300);
+  }
   tx_state_ = TxState::Waiting;
   tx_status_ = tr("Waiting for the USB adapter to respond.");
   return true;
@@ -136,8 +205,26 @@ void CustomUsbSerialStream::streamThread() {
     QByteArray request;
     {
       std::lock_guard lock(stats_mutex_);
-      if (!tx_deadline_.hasExpired()) request.swap(tx_request_);
-      else tx_request_.clear();
+      if (repeat_active_) {
+        if (repeat_deadline_.hasExpired() || tx_capability_.hasExpired()) {
+          const bool automatic = repeat_automatic_;
+          clearRepeat();
+          tx_request_.clear();
+          tx_in_flight_ = 0;
+          tx_state_ = TxState::Error;
+          tx_status_ = automatic ? tr("Automatic send response timed out. Transmission outcome unknown.")
+                                 : tr("Fixed-rate send response timed out. Transmission outcome unknown.");
+        } else if (!tx_request_.isEmpty()) {
+          request.swap(tx_request_);
+        } else if (repeat_keepalive_.hasExpired()) {
+          request = repeatControl(repeat_cancelled_ ? DK_TX_CANCEL : DK_TX_KEEPALIVE);
+          repeat_keepalive_ = QDeadlineTimer(300);
+        }
+      } else if (!tx_deadline_.hasExpired()) {
+        request.swap(tx_request_);
+      } else {
+        tx_request_.clear();
+      }
     }
     if (!request.isEmpty()) {
       if (serial.write(request) != request.size()) {
@@ -190,10 +277,13 @@ void CustomUsbSerialStream::streamThread() {
       {
         std::lock_guard lock(stats_mutex_);
         last_record_ms_ = QDateTime::currentMSecsSinceEpoch();
-        if (raw[1] == DK_TX_REQUEST) continue;
+        if (raw[1] == DK_TX_REQUEST || raw[1] == DK_TX_REPEAT || raw[1] == DK_TX_AUTO ||
+            raw[1] == DK_TX_REPEAT_CONTROL) continue;
         if (boot != tx_boot_id_) {
           tx_capability_ = QDeadlineTimer(0);
           tx_boot_id_ = boot;
+          repeat_supported_ = automatic_supported_ = false;
+          clearRepeat();
           tx_request_.clear();
           recent_data_frames_.clear();
           if (tx_in_flight_) {
@@ -205,13 +295,31 @@ void CustomUsbSerialStream::streamThread() {
           }
           tx_in_flight_ = 0;
         }
-        if (raw[1] == DK_TX_RESULT) {
+        const bool repeat_result = raw[1] == DK_TX_REPEAT_RESULT;
+        const bool automatic_result = raw[1] == DK_TX_AUTO_RESULT;
+        const bool ongoing_result = repeat_result || automatic_result;
+        if (ongoing_result || raw[1] == DK_TX_RESULT) {
           if (sequence == 0 && raw[20] == DK_TX_READY) {
             tx_capability_ = QDeadlineTimer(2500);
-          } else if (sequence && sequence == tx_in_flight_) {
-            tx_state_ = raw[20] == DK_TX_QUEUED ? TxState::Queued : TxState::Error;
+            if (automatic_result) automatic_supported_ = true;
+            else repeat_supported_ = bus == DK_TX_REPEAT_CAPABILITY;
+          } else if (sequence && (sequence == tx_in_flight_ ||
+                     (!ongoing_result && !repeat_active_ && sequence == tx_sequence_)) &&
+                     ongoing_result == repeat_active_ &&
+                     (!ongoing_result || (bus == repeat_bus_ && automatic_result == repeat_automatic_))) {
+            if (raw[20] == DK_TX_REPEAT_STARTED) {
+              if (!repeat_cancelled_) {
+                repeat_deadline_ = QDeadlineTimer(repeat_duration_ms_ + 1500);
+                tx_state_ = TxState::Waiting;
+                tx_status_ = repeat_automatic_ ? tr("Automatically restoring changed frames…")
+                                               : tr("Sending at a fixed rate…");
+              }
+              continue;
+            }
+            tx_state_ = TxState::Error;
             switch (raw[20]) {
               case DK_TX_QUEUED:
+                tx_state_ = TxState::Queued;
                 tx_status_ = tr("Queued by the USB adapter.");
                 break;
               case DK_TX_RATE_LIMIT:
@@ -226,11 +334,27 @@ void CustomUsbSerialStream::streamThread() {
               case DK_TX_PREVIOUS_FAILED:
                 tx_status_ = tr("The previous transmission failed on CAN bus %1. Its queue was cleared.").arg(bus);
                 break;
+              case DK_TX_REPEAT_FINISHED:
+                tx_state_ = TxState::Queued;
+                tx_status_ = repeat_automatic_ ? tr("Automatic send finished.") : tr("Fixed-rate send finished.");
+                break;
+              case DK_TX_REPEAT_CANCELLED:
+                tx_state_ = TxState::Ready;
+                tx_status_ = repeat_automatic_ ? tr("Automatic send cancelled.") : tr("Fixed-rate send cancelled.");
+                break;
+              case DK_TX_REPEAT_BUSY:
+                tx_status_ = tr("The USB adapter already has a timed send in progress.");
+                break;
+              case DK_TX_REPEAT_LEASE_EXPIRED:
+                tx_status_ = repeat_automatic_ ? tr("Automatic send stopped after losing its USB connection.")
+                                               : tr("Fixed-rate send stopped after losing its USB connection.");
+                break;
               default:
                 tx_status_ = tr("The USB adapter rejected the request without giving a reason.");
                 break;
             }
             tx_in_flight_ = 0;
+            clearRepeat();
           }
           continue;
         }
@@ -270,12 +394,12 @@ void CustomUsbSerialStream::streamThread() {
           recent.push_back({QByteArray(reinterpret_cast<const char*>(raw + 25), raw[24]), raw[3], boot});
         }
       }
-      // Two RX tasks may enqueue close timestamps out of order.
-      // Keep the Cabana playback clock nondecreasing.
-      last_ns = std::max(last_ns, device_ns + time_offset);
+      // Playback resumes strictly after its cursor. Give tied or late USB
+      // records distinct times so a later batch can still update playback.
+      last_ns = std::max(last_ns + 1, device_ns + time_offset);
       MessageBuilder message;
       auto event = message.initEvent();
-      event.setLogMonoTime(std::max(uint64_t(1), last_ns));
+      event.setLogMonoTime(last_ns);
       auto can = event.initCan(1);
       can[0].setSrc(bus);
       can[0].setAddress(dk_get(raw + 20, 4));

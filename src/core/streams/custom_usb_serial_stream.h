@@ -19,15 +19,28 @@ class CustomUsbSerialStream : public LiveStream {
     uint32_t boot_id;
   };
   std::optional<CapturedFrame> latestDataFrame(const MessageId& id, const dbc::Signal* signal = nullptr) const;
+  struct RepeatTiming {
+    unsigned frequency_hz;
+    unsigned duration_ms;
+    bool automatic = false;
+  };
   bool txReady() const;
+  bool repeatSupported() const;
+  bool automaticSupported() const;
+  bool repeatPending() const;
+  void cancelRepeat();
   bool sendFrame(uint8_t bus, uint32_t address, uint8_t flags, const QByteArray& data,
-                 std::optional<uint32_t> expected_boot = std::nullopt);
+                 std::optional<uint32_t> expected_boot = std::nullopt,
+                 std::optional<RepeatTiming> repeat = std::nullopt,
+                 QByteArray signal_mask = {});
   enum class TxState { Ready, Waiting, Queued, Error };
   QString txStatus(TxState* state = nullptr) const;
 
  private:
   void streamThread() override;
   void setError(const QString& error);
+  void clearRepeat();
+  QByteArray repeatControl(uint8_t opcode) const;
 
   QString port_;
   qint32 baud_rate_;
@@ -36,6 +49,11 @@ class CustomUsbSerialStream : public LiveStream {
   QDeadlineTimer tx_capability_{0}, tx_deadline_{0};
   uint32_t tx_boot_id_ = 0, tx_sequence_ = 0, tx_in_flight_ = 0;
   QByteArray tx_request_;
+  bool repeat_supported_ = false, automatic_supported_ = false;
+  bool repeat_active_ = false, repeat_cancelled_ = false, repeat_automatic_ = false;
+  uint8_t repeat_bus_ = 0;
+  QDeadlineTimer repeat_keepalive_{0}, repeat_deadline_{0};
+  unsigned repeat_duration_ms_ = 0;
   QString tx_status_;
   TxState tx_state_ = TxState::Ready;
   std::unordered_map<MessageId, std::deque<CapturedFrame>> recent_data_frames_;
