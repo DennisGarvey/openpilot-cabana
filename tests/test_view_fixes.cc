@@ -162,6 +162,14 @@ int main(int argc, char** argv) {
     app.processEvents();
     const auto pinned_name = pinned_model->index(0, SignalTreeModel::NameColumn);
     const auto original_name = model->index(1, SignalTreeModel::NameColumn);
+    const auto pinned_handle = pinned_model->index(0, SignalTreeModel::PinHandleColumn);
+    if (!pinned_handle.data(PinDragHandleRole).toBool() || pinned_name.data(PinDragHandleRole).toBool() ||
+        model->index(0, SignalTreeModel::PinHandleColumn).isValid() ||
+        pinned_tree->treePosition() != SignalTreeModel::NameColumn ||
+        pinned_tree->visualRect(pinned_handle).right() >= pinned_tree->visualRect(pinned_name).left()) {
+      app.exit(34);
+      return;
+    }
     if (pinned_name.data(SignalNumberRole).toInt() != 2 ||
         original_name.data(SignalNumberRole) != pinned_name.data(SignalNumberRole) ||
         model->itemFromIndex(original_name)->sig != pinned_model->itemFromIndex(pinned_name)->sig ||
@@ -205,6 +213,24 @@ int main(int argc, char** argv) {
     const auto active = model->index(model->signalRow(signal), SignalTreeModel::ValueColumn);
     if (!active.isValid() || !active.data().toString().contains("80")) {
       app.exit(21);
+      return;
+    }
+
+    const auto original_pins = settings.pinned_signals;
+    const QString page_pin = MessageId(1, 42).toString() + "|Page";
+    const QString unavailable_pin = MessageId(0, 42).toString() + "|Unavailable";
+    const QString brick_pin = original_pins.front();
+    settings.pinned_signals = {brick_pin, unavailable_pin, page_pin};
+    pinned_model->rebuild();
+    const QPersistentModelIndex moved_pin(pinned_model->index(0, SignalTreeModel::NameColumn));
+    const bool reordered = pinned_model->movePinnedSignal(0, 1) && moved_pin.row() == 1 &&
+                           settings.pinned_signals == QStringList{unavailable_pin, page_pin, brick_pin};
+    pinned_model->rebuild();
+    const bool restored_order = pinned_model->index(0, SignalTreeModel::NameColumn).data().toString() == "Page";
+    settings.pinned_signals = original_pins;
+    pinned_model->rebuild();
+    if (!reordered || !restored_order) {
+      app.exit(33);
       return;
     }
 

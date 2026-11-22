@@ -25,7 +25,7 @@ SignalEditor::SignalEditor(ChartsPanel* charts, QWidget* parent) : QFrame(parent
   setFrameStyle(QFrame::NoFrame);
   tree = new SignalTree(this);
   model = new SignalTreeModel(this);
-  pinned_tree = new SignalTree(this);
+  pinned_tree = new SignalTree(this, true);
   pinned_model = new SignalTreeModel(this, true);
 
   configureTree(tree, model, charts);
@@ -89,7 +89,13 @@ void SignalEditor::configureTree(SignalTree* view, SignalTreeModel* tree_model, 
   auto* header = view->header();
   const int row_height = row_delegate->sizeHint(QStyleOptionViewItem{}, {}).height();
   view->setMinimumHeight(header->sizeHint().height() + row_height + view->frameWidth() * 2);
-  header->setMinimumSectionSize(100);
+  header->setMinimumSectionSize(view == pinned_tree ? SignalTreeDelegate::kPinHandleWidth : 100);
+  if (view == pinned_tree) {
+    view->setTreePosition(SignalTreeModel::NameColumn);
+    header->moveSection(header->visualIndex(SignalTreeModel::PinHandleColumn), 0);
+    header->setSectionResizeMode(SignalTreeModel::PinHandleColumn, QHeaderView::Fixed);
+    header->resizeSection(SignalTreeModel::PinHandleColumn, SignalTreeDelegate::kPinHandleWidth);
+  }
   header->setSectionResizeMode(SignalTreeModel::NameColumn, QHeaderView::Interactive);
   header->setSectionResizeMode(SignalTreeModel::HistoryColumn, QHeaderView::Interactive);
   header->setSectionResizeMode(SignalTreeModel::ValueColumn, QHeaderView::Stretch);
@@ -345,7 +351,7 @@ int SignalEditor::signalNameWidth() const {
   }
   for (int row = 0; row < pinned_model->rowCount(); ++row) {
     const auto* item = pinned_model->itemFromIndex(pinned_model->index(row, SignalTreeModel::NameColumn));
-    width = std::max(width, delegate->nameColumnWidth(item->sig) + tree->indentation());
+    width = std::max(width, delegate->nameColumnWidth(item->sig) + pinned_tree->indentation());
   }
   return width;
 }

@@ -47,6 +47,17 @@ QSize SignalTreeDelegate::sizeHint(const QStyleOptionViewItem& option, const QMo
 void SignalTreeDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
   auto item = static_cast<SignalTreeModel::Item*>(index.internalPointer());
 
+  if (index.column() == SignalTreeModel::PinHandleColumn) {
+    if (index.data(PinDragHandleRole).toBool()) {
+      const auto center = option.rect.center();
+      painter->setPen(option.palette.color(QPalette::Text));
+      for (int y = -3; y <= 3; y += 3) {
+        painter->drawLine(center.x() - 5, center.y() + y, center.x() + 5, center.y() + y);
+      }
+    }
+    return;
+  }
+
   // Selection background
   if (option.state & QStyle::State_Selected) {
     painter->fillRect(option.rect, option.palette.highlight());
@@ -286,6 +297,10 @@ bool SignalTreeDelegate::helpEvent(QHelpEvent* event, QAbstractItemView* view, c
   auto item = static_cast<SignalTreeModel::Item*>(index.internalPointer());
   if (!item || item->type != SignalTreeModel::Item::Sig) {
     return QStyledItemDelegate::helpEvent(event, view, option, index);
+  }
+  if (index.data(PinDragHandleRole).toBool()) {
+    QToolTip::showText(event->globalPos(), tr("Drag to reorder pinned signals"), view);
+    return true;
   }
   if (index.column() == SignalTreeModel::HistoryColumn && !item->sparkline->isEmpty()) {
     const QString tooltip = tr("Session Min: %1\nSession Max: %2")

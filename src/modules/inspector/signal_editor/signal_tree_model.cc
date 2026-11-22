@@ -176,6 +176,21 @@ void SignalTreeModel::rebuild() {
   endResetModel();
 }
 
+bool SignalTreeModel::movePinnedSignal(int from, int to) {
+  if (!pinned_only_ || from == to || from < 0 || from >= rowCount() || to < 0 || to >= rowCount()) return false;
+  auto pinIndex = [this](int row) {
+    const auto* item = root->children.at(row);
+    return settings.pinned_signals.indexOf(item->id.toString() + "|" + item->sig->name);
+  };
+  const auto source = pinIndex(from);
+  const auto destination = pinIndex(to);
+  if (source < 0 || destination < 0 || !beginMoveRows({}, from, from, {}, to + (from < to))) return false;
+  settings.pinned_signals.move(source, destination);
+  root->children.move(from, to);
+  endMoveRows();
+  return true;
+}
+
 SignalTreeModel::Item* SignalTreeModel::itemFromIndex(const QModelIndex& index) const {
   return index.isValid() ? static_cast<Item*>(index.internalPointer()) : root.get();
 }
@@ -275,7 +290,7 @@ QModelIndex SignalTreeModel::index(int row, int column, const QModelIndex& paren
   if (parent.isValid() && parent.column() != 0) return {};
 
   auto* parent_item = itemFromIndex(parent);
-  if (row >= 0 && row < parent_item->children.size() && column >= 0 && column < ColumnCount) {
+  if (row >= 0 && row < parent_item->children.size() && column >= 0 && column < columnCount(parent)) {
     return createIndex(row, column, parent_item->children[row]);
   }
   return {};
@@ -346,6 +361,10 @@ QVariant SignalTreeModel::data(const QModelIndex& index, int role) const {
       return tooltip;
     }
     if (index.column() == ValueColumn) return item->sig_val.toHtmlEscaped().prepend("<qt>").append("</qt>");
+  }
+
+  if (role == PinDragHandleRole) {
+    return pinned_only_ && item->type == Item::Sig && index.column() == PinHandleColumn;
   }
 
   if (role == PinnedSignalRole && item->type == Item::Sig && index.column() == NameColumn) {

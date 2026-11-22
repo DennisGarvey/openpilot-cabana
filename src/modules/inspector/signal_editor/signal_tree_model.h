@@ -13,12 +13,13 @@ enum SignalRole {
   IsChartedRole = Qt::UserRole + 10,
   SignalNumberRole = Qt::UserRole + 12,
   PinnedSignalRole,
+  PinDragHandleRole,
 };
 
 class SignalTreeModel : public QAbstractItemModel {
   Q_OBJECT
  public:
-  enum Column { NameColumn, HistoryColumn, ValueColumn, ColumnCount };
+  enum Column { NameColumn, HistoryColumn, ValueColumn, PinHandleColumn, ColumnCount };
 
   struct Item {
     enum Type {
@@ -67,7 +68,7 @@ class SignalTreeModel : public QAbstractItemModel {
   inline const MessageId& messageId() const { return msg_id; }
   void highlightSignalRow(const dbc::Signal* sig);
   int rowCount(const QModelIndex& parent = QModelIndex()) const override;
-  int columnCount(const QModelIndex& parent = QModelIndex()) const override { return ColumnCount; }
+  int columnCount(const QModelIndex& parent = QModelIndex()) const override { return pinned_only_ ? ColumnCount : PinHandleColumn; }
   QVariant headerData(int section, Qt::Orientation orientation, int role) const override;
   QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
   QModelIndex index(int row, int column, const QModelIndex& parent = QModelIndex()) const override;
@@ -85,6 +86,7 @@ class SignalTreeModel : public QAbstractItemModel {
   int signalRow(const dbc::Signal* sig) const;
   QModelIndex valueTableIndex(QModelIndex signal);
   void rebuild();
+  bool movePinnedSignal(int from, int to);
   void updateChartedSignals(const QMap<MessageId, QSet<const dbc::Signal*>>& opened);
   void fetchMore(const QModelIndex& parent) override;
   bool canFetchMore(const QModelIndex& parent) const override;

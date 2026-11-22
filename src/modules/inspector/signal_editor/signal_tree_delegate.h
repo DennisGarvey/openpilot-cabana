@@ -17,6 +17,7 @@ class SignalTreeDelegate : public QStyledItemDelegate {
   const int kBtnSpacing = 4;
   const int kPadding = 6;
   const int kColorLabelW = 18;
+  static constexpr int kPinHandleWidth = 24;
 
   SignalTreeDelegate(QObject* parent);
   void clearHoverState();
