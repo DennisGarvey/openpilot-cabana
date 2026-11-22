@@ -104,6 +104,9 @@ def main():
                     time.sleep(.005)
             repeat = os.environ.get('CABANA_TEST_TX_REPEAT')
             automatic = bool(repeat and repeat.startswith('automatic'))
+            feedback = os.environ.get('CABANA_TEST_TX_FEEDBACK')
+            if feedback:
+                tx_result(master, 10, 0, 0, 0)
             tx_result(master, 8 if automatic else 3, int(bool(repeat) and not automatic), 0, 0)
             pending = bytearray()
             request = read_record(master, pending)
@@ -113,12 +116,16 @@ def main():
             assert (version, kind, bus, flags, boot, address, length) == (1, expected_kind, 1, 13, 124, 0x22222, 64)
             assert sequence and request[25:89] == b'\x12\x35' + b'\xa5' * 62
             if repeat:
-                expected_mask = b'\xff\xf0' + b'\0' * 61 + b'\x01'
-                assert request[89:] == expected_mask
-                assert (timestamp & 0xffffffff, timestamp >> 32) == (0 if automatic else 5, 1000)
+                expected_mask = b'\xff\xf0' + b'\0' * 61 + (b'\0' if feedback else b'\x01')
+                assert request[89:153] == expected_mask
+                assert request[153:] == (b'\0' * 63 + b'\x01' if feedback else b'')
+                assert (timestamp & 0xffffffff, timestamp >> 32) == (0 if automatic else (500 if feedback else 5), 1000)
                 assert kind == (7 if automatic else 4)
                 result_kind = 8 if automatic else 6
                 tx_result(master, result_kind, 1, sequence, 7)
+                if feedback:
+                    tx_result(master, 10, 1, sequence, 1)
+                    tx_result(master, 10, 1, sequence, 1)
                 control = lambda opcode: struct.pack('<BBBBIIQB', 1, 5, 1, 0, 124, sequence, 0, opcode)
                 assert read_record(master, pending) == control(0)
                 if repeat.endswith('cancel'):
@@ -135,6 +142,14 @@ def main():
             else:
                 assert not pending.strip(b'\0'), 'Unexpected second TX request'
                 tx_result(master, 3, 1, sequence, 4 if 'CABANA_TEST_TX_FIFO_FULL' in os.environ else 1)
+                if feedback:
+                    tx_result(master, 10, 0, sequence, 3)  # Same sequence on the wrong bus.
+                    time.sleep(.25)
+                    if feedback == 'unconfirmed':
+                        os.write(master, encode(struct.pack('<BBBBIIQBIII', 1, 10, 1, 0, 124, sequence,
+                                                            102, 2, 0x30, 1 << 18, 8 << 8)))
+                    else:
+                        tx_result(master, 10, 1, sequence, {'ack': 1, 'unknown': 3}[feedback])
             stdout, stderr = process.communicate(timeout=8)
             print(stdout.decode())
             if process.returncode:

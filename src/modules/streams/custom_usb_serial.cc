@@ -26,14 +26,10 @@ namespace {
 
 QByteArray signalMask(const dbc::Signal& signal, int data_size) {
   QByteArray mask(data_size, 0);
-  auto add = [&mask](const dbc::Signal& selected) {
-    for (int i = 0; i < selected.size; ++i) {
-      const int bit = selected.getBitIndex(i);
-      if (bit >= 0 && bit / 8 < mask.size()) mask[bit / 8] |= char(1u << (bit % 8));
-    }
-  };
-  add(signal);
-  if (signal.multiplexor) add(*signal.multiplexor);
+  for (int i = 0; i < signal.size; ++i) {
+    const int bit = signal.getBitIndex(i);
+    if (bit >= 0 && bit / 8 < mask.size()) mask[bit / 8] |= char(1u << (bit % 8));
+  }
   return mask;
 }
 
@@ -44,7 +40,7 @@ struct SendControls {
         cancel(new QPushButton(QObject::tr("Cancel Send"), &dialog)), allow_timed(allow_timed) {
     mode->addItem(QObject::tr("Once"));
     if (allow_timed) mode->addItems({QObject::tr("Fixed Rate"), QObject::tr("Automatic Retransmission")});
-    frequency->setRange(1, DK_TX_MAX_HZ);
+    frequency->setRange(1, DK_TX_LEGACY_MAX_HZ);
     frequency->setValue(5);
     frequency->setSuffix(QStringLiteral(" Hz"));
     duration->setDecimals(1);
@@ -93,6 +89,10 @@ struct SendControls {
     const bool selected_supported = !timed() || (fixedRate() ? fixed_supported : automatic_supported);
     mode->setToolTip(selected_supported ? QString() :
                      QObject::tr("This mode requires compatible USB transmit firmware."));
+    if (stream && !active) {
+      const int maximum = stream->fixedRateLimit();
+      if (frequency->maximum() != maximum) frequency->setMaximum(maximum);
+    }
     frequency->setEnabled(!active);
     duration->setEnabled(!active);
     send->setEnabled(valid_input && stream && stream->txReady() && selected_supported);
@@ -181,7 +181,7 @@ void CustomUsbSerialWidget::showUtilizationDialog(QWidget* parent, CustomUsbSeri
   form->addRow(tr("CAN bus 1 utilization"), can1);
   serial->setToolTip(tr("Read and write throughput relative to the 8 Mbit/s logical serial setting."));
   spi->setToolTip(tr("Time spent clocking the shared SPI bus."));
-  const QString can_hint = tr("Estimated from received frames and queued sends. Includes a bit-stuffing allowance.");
+  const QString can_hint = tr("Estimated from frame sizes and bit rates with a bit-stuffing allowance.");
   can0->setToolTip(can_hint);
   can1->setToolTip(can_hint);
   auto* status = new QLabel(dialog);
@@ -355,7 +355,9 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     const auto* signal = getSignal();
     const bool has_frame = stream && signal && stream->latestDataFrame(id, signal).has_value();
     const bool has_value = has_choices ? choices->currentIndex() >= 0 : !value->text().trimmed().isEmpty();
-    controls.refresh(stream, has_frame && has_value);
+    const bool mux_supported = !(controls.timed() && signal && signal->multiplexor) ||
+                               (stream && stream->transmitFeedbackSupported());
+    controls.refresh(stream, has_frame && has_value && mux_supported);
 
     TxState state = TxState::Waiting;
     QString message;
@@ -367,6 +369,8 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     } else if (!signal) {
       state = TxState::Error;
       message = tr("Signal definition is unavailable.");
+    } else if (!mux_supported) {
+      message = tr("Timed sends for multiplexed signals require updated USB transmit firmware.");
     } else if (!has_frame && signal->multiplexor) {
       message = tr("Waiting for a frame with %1 = %2.")
                     .arg(signal->multiplexor->name).arg(signal->multiplex_value);
@@ -385,7 +389,8 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     switch (state) {
       case TxState::Ready: color = status->palette().color(QPalette::Highlight); break;
       case TxState::Waiting: break;
-      case TxState::Queued: color = QColor("#2d9d64"); break;
+      case TxState::Queued: break;
+      case TxState::Acknowledged: color = QColor("#2d9d64"); break;
       case TxState::Error: color = QColor("#d85c5c"); break;
     }
     auto palette = indicator->palette();
@@ -414,15 +419,20 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
     input_error.clear();
     if (!encoded) {
       input_error = tr("Could not encode the value. Check that it fits the signal.");
-    } else if (!stream->sendFrame(id.source, id.address, frame->flags, frame->data, frame->boot_id,
-                                  controls.timing(), signalMask(*signal, frame->data.size()))) {
-      input_error = tr("The frame could not be queued. Check the USB connection and try again.");
+    } else {
+      const auto timing = controls.timing();
+      const auto selector = timing && signal->multiplexor ? signalMask(*signal->multiplexor, frame->data.size()) : QByteArray();
+      if (!stream->sendFrame(id.source, id.address, frame->flags, frame->data, frame->boot_id,
+                             timing, signalMask(*signal, frame->data.size()), selector)) {
+        input_error = tr("The frame could not be queued. Check the USB connection and try again.");
+      }
     }
     refresh();
   });
 
   QTimer timer;
   connect(&timer, &QTimer::timeout, &dialog, refresh);
+  connect(controls.mode, &QComboBox::currentIndexChanged, &dialog, refresh);
   auto value_changed = [&] {
     input_error.clear();
     refresh();

@@ -21,7 +21,7 @@ void CustomUsbSerialStream::setError(const QString& error) {
   tx_status_ = tx_in_flight_ ? tr("USB connection lost. Transmission outcome unknown.") : error;
   tx_state_ = TxState::Error;
   tx_in_flight_ = 0;
-  repeat_supported_ = automatic_supported_ = false;
+  repeat_supported_ = automatic_supported_ = feedback_supported_ = false;
   clearRepeat();
 }
 
@@ -91,6 +91,15 @@ bool CustomUsbSerialStream::repeatSupported() const {
   return repeat_supported_ && !tx_capability_.hasExpired();
 }
 
+int CustomUsbSerialStream::fixedRateLimit() const {
+  return transmitFeedbackSupported() ? DK_TX_MAX_HZ : DK_TX_LEGACY_MAX_HZ;
+}
+
+bool CustomUsbSerialStream::transmitFeedbackSupported() const {
+  std::lock_guard lock(stats_mutex_);
+  return feedback_supported_ && !tx_capability_.hasExpired();
+}
+
 bool CustomUsbSerialStream::automaticSupported() const {
   std::lock_guard lock(stats_mutex_);
   return automatic_supported_ && !tx_capability_.hasExpired();
@@ -149,14 +158,16 @@ QString CustomUsbSerialStream::txStatus(TxState* state) const {
 
 bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t flags, const QByteArray& data,
                                      std::optional<uint32_t> expected_boot, std::optional<RepeatTiming> repeat,
-                                     QByteArray signal_mask) {
+                                     QByteArray signal_mask, QByteArray selector_mask) {
   if (data.size() > 64) return false;
-  if (repeat && signal_mask.isEmpty()) signal_mask.fill(char(0xff), data.size());
   if (repeat && signal_mask.size() != data.size()) return false;
+  if (!selector_mask.isEmpty() && (!repeat || selector_mask.size() != data.size())) return false;
   std::lock_guard lock(stats_mutex_);
   if (expected_boot && *expected_boot != tx_boot_id_) return false;
   if (repeat_active_ || tx_capability_.hasExpired() ||
       (repeat && (repeat->automatic ? !automatic_supported_ : !repeat_supported_)) ||
+      (!selector_mask.isEmpty() && !feedback_supported_) ||
+      (repeat && !repeat->automatic && !feedback_supported_ && repeat->frequency_hz > DK_TX_LEGACY_MAX_HZ) ||
       (tx_in_flight_ && !tx_deadline_.hasExpired())) return false;
   if (++tx_sequence_ == 0) ++tx_sequence_;
   const uint8_t type = !repeat ? DK_TX_REQUEST : (repeat->automatic ? DK_TX_AUTO : DK_TX_REPEAT);
@@ -171,11 +182,15 @@ bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t fla
   raw[24] = data.size();
   memcpy(raw + 25, data.constData(), data.size());
   if (repeat) memcpy(raw + 25 + data.size(), signal_mask.constData(), signal_mask.size());
+  if (!selector_mask.isEmpty()) memcpy(raw + 25 + 2 * data.size(), selector_mask.constData(), selector_mask.size());
   uint8_t wire[DK_MAX_WIRE], decoded[DK_MAX_RAW];
-  size_t size = dk_encode(raw, 25 + data.size() * (repeat ? 2 : 1), wire);
+  size_t size = dk_encode(raw, 25 + data.size() * (repeat ? 2 : 1) + selector_mask.size(), wire);
   if (!size || !dk_decode(wire, size - 1, decoded)) return false;
   tx_request_ = QByteArray(1, '\0') + QByteArray(reinterpret_cast<const char*>(wire), size);
   tx_in_flight_ = tx_sequence_;
+  tx_bus_ = bus;
+  tx_acknowledged_ = 0;
+  tx_feedback_error_.clear();
   tx_deadline_ = QDeadlineTimer(1500);
   if (repeat) {
     repeat_active_ = true;
@@ -290,7 +305,7 @@ void CustomUsbSerialStream::streamThread() {
           tx_capability_ = QDeadlineTimer(0);
           tx_boot_id_ = boot;
           utilization_expiry_ = QDeadlineTimer(0);
-          repeat_supported_ = automatic_supported_ = false;
+          repeat_supported_ = automatic_supported_ = feedback_supported_ = false;
           clearRepeat();
           tx_request_.clear();
           recent_data_frames_.clear();
@@ -302,6 +317,42 @@ void CustomUsbSerialStream::streamThread() {
             tx_status_.clear();
           }
           tx_in_flight_ = 0;
+        }
+        if (raw[1] == DK_TX_FEEDBACK) {
+          if (sequence == 0) {
+            feedback_supported_ = true;
+          } else if (sequence == tx_in_flight_ && bus == tx_bus_) {
+            if (raw[20] == DK_TX_ACKNOWLEDGED) {
+              ++tx_acknowledged_;
+              tx_state_ = TxState::Acknowledged;
+              if (!repeat_active_) {
+                tx_status_ = tr("Transmitted and acknowledged by another CAN node.");
+              } else if (!repeat_cancelled_) {
+                tx_status_ = tr("Acknowledged frames: %1").arg(tx_acknowledged_);
+              }
+            } else {
+              tx_feedback_error_ = raw[20] == DK_TX_UNCONFIRMED
+                  ? tr("CAN bus %1: the controller reached its attempt limit without confirming transmission.").arg(bus)
+                  : tr("CAN bus %1: transmission outcome unknown.").arg(bus);
+              if (n == DK_TX_FEEDBACK_DIAGNOSTICS_SIZE + 2) {
+                const auto fifo = dk_get(raw + 21, 4);
+                const auto bus_diag = dk_get(raw + 25, 4);
+                const auto counters = dk_get(raw + 29, 4);
+                QStringList flags;
+                if (fifo & (1u << 6)) flags += tr("arbitration lost");
+                if (fifo & (1u << 5)) flags += tr("transmit error");
+                if (counters & (1u << 21)) flags += tr("bus-off");
+                if (bus_diag & (1u << 18)) flags += tr("missing ACK recorded by controller");
+                if (!flags.isEmpty()) tx_feedback_error_ += QStringLiteral("\n") + flags.join(tr(", "));
+                tx_feedback_error_ += tr("\nTEC %1, REC %2 · FIFO 0x%3 · bus diagnostics 0x%4")
+                    .arg((counters >> 8) & 0xff).arg(counters & 0xff).arg(fifo, 0, 16).arg(bus_diag, 0, 16);
+              }
+              tx_state_ = TxState::Error;
+              tx_status_ = tx_feedback_error_;
+            }
+            if (!repeat_active_) tx_in_flight_ = 0;
+          }
+          continue;
         }
         const bool repeat_result = raw[1] == DK_TX_REPEAT_RESULT;
         const bool automatic_result = raw[1] == DK_TX_AUTO_RESULT;
@@ -328,6 +379,10 @@ void CustomUsbSerialStream::streamThread() {
             switch (raw[20]) {
               case DK_TX_QUEUED:
                 tx_state_ = TxState::Queued;
+                if (feedback_supported_ && !ongoing_result) {
+                  tx_status_ = tr("Queued by the USB adapter. Waiting for controller feedback.");
+                  continue;
+                }
                 tx_status_ = tr("Queued by the USB adapter.");
                 break;
               case DK_TX_RATE_LIMIT:
@@ -360,6 +415,14 @@ void CustomUsbSerialStream::streamThread() {
               default:
                 tx_status_ = tr("The USB adapter rejected the request without giving a reason.");
                 break;
+            }
+            if (ongoing_result && feedback_supported_) {
+              if (tx_state_ == TxState::Queued && tx_acknowledged_) tx_state_ = TxState::Acknowledged;
+              if (!tx_feedback_error_.isEmpty()) {
+                tx_state_ = TxState::Error;
+                tx_status_ = tx_feedback_error_;
+              }
+              tx_status_ += QStringLiteral("\n") + tr("Acknowledged frames: %1").arg(tx_acknowledged_);
             }
             tx_in_flight_ = 0;
             clearRepeat();

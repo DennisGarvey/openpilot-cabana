@@ -49,6 +49,7 @@ int main(int argc, char** argv) {
   const QByteArray repeat_test = qgetenv("CABANA_TEST_TX_REPEAT");
   const bool repeat = !repeat_test.isEmpty();
   const bool automatic = repeat_test.startsWith("automatic");
+  const QByteArray feedback = qgetenv("CABANA_TEST_TX_FEEDBACK");
   bool sent = false;
   QTimer send_timer;
   QObject::connect(&send_timer, &QTimer::timeout, &app, [&] {
@@ -101,13 +102,26 @@ int main(int argc, char** argv) {
       return;
     }
     std::optional<CustomUsbSerialStream::RepeatTiming> timing;
-    if (repeat) timing = CustomUsbSerialStream::RepeatTiming{automatic ? 0u : 5u, 1000, automatic};
+    if (repeat) {
+      const unsigned frequency = automatic ? 0u : (feedback.isEmpty() ? 5u : 500u);
+      timing = CustomUsbSerialStream::RepeatTiming{frequency, 1000, automatic};
+    } else if (!feedback.isEmpty()) {
+      QTimer::singleShot(150, &app, [&] {
+        if (stream.txReady() || !stream.txStatus().contains("Waiting for controller feedback")) app.exit(17);
+      });
+    }
     QByteArray signal_mask(64, 0);
     signal_mask[0] = char(0xff);
     signal_mask[1] = char(0xf0);
-    signal_mask[63] = 1;
+    QByteArray selector_mask;
+    if (repeat && !feedback.isEmpty()) {
+      selector_mask.fill(0, 64);
+      selector_mask[63] = 1;
+    } else {
+      signal_mask[63] = 1;
+    }
     sent = stream.sendFrame(multiplexed_id.source, multiplexed_id.address, matching->flags,
-                            matching->data, matching->boot_id, timing, signal_mask);
+                            matching->data, matching->boot_id, timing, signal_mask, selector_mask);
     if (repeat_test.endsWith("cancel")) {
       QTimer::singleShot(550, &app, [&] {
         if (!stream.repeatPending()) app.exit(14);
@@ -124,8 +138,20 @@ int main(int argc, char** argv) {
     else if (automatic) expected_status = "Automatic send finished";
     else if (repeat) expected_status = "Fixed-rate send finished";
     else if (qEnvironmentVariableIsSet("CABANA_TEST_TX_FIFO_FULL")) expected_status = "CAN bus 1 transmit queue is full";
+    if (!feedback.isEmpty()) {
+      if (repeat) expected_status += ".\nAcknowledged frames: 2";
+      else if (feedback == "ack") expected_status = "Transmitted and acknowledged";
+      else if (feedback == "unconfirmed") expected_status = "without confirming transmission";
+      else if (feedback == "unknown") expected_status = "transmission outcome unknown";
+    }
     if (!sent || stream.repeatPending() || !stream.txStatus().contains(expected_status)) {
+      std::cerr << "Expected " << expected_status.toStdString() << ", got " << stream.txStatus().toStdString() << '\n';
       app.exit(9);
+      return;
+    }
+    if (feedback == "unconfirmed" &&
+        (!stream.txStatus().contains("missing ACK recorded by controller") || !stream.txStatus().contains("TEC 8, REC 0"))) {
+      app.exit(18);
       return;
     }
     stream.stop();

@@ -13,13 +13,19 @@
  * queueing. Overflow events indicate at least one lost frame, not an exact count.
  * Utilization (bus, flags and sequence zero): serial, CPU cores 0/1, shared
  * SPI, and CAN buses 0/1, each as u16 per mille over the last sample interval.
+ * TX feedback uses the TX result layout. A zero sequence announces support;
+ * a nonzero sequence reports the outcome of one individual transmit attempt.
+ * Failure feedback may append FIFO status, bus diagnostics and error counters
+ * as three u32 controller register snapshots.
  * Flags: bit0 extended, bit1 RTR, bit2 FD, bit3 BRS.
  * USB transmit requests use the Frame layout with the adapter's current boot ID
  * and a nonzero request sequence. TX results carry one status byte at offset
  * 20 and echo the request bus and sequence. Sequence zero announces TX support.
  * Timed requests append one payload-length byte mask after the frame data;
  * masked bits are held at the requested values while unmasked bits follow
- * received frames. They use frequency_hz:u32 and duration_ms:u32 in place of
+ * received frames. An optional second mask matches selector bits against
+ * the original payload without overriding them. Timed requests use
+ * frequency_hz:u32 and duration_ms:u32 in place of
  * the timestamp (automatic mode requires frequency zero). Repeat controls use the request bus and sequence,
  * an all-zero timestamp, and one opcode byte at offset 20. Repeat results use
  * the TX result layout. Bus 1 in a zero-sequence TX ready record advertises
@@ -39,6 +45,11 @@
 #define DK_TX_AUTO_RESULT 8
 #define DK_UTILIZATION 9
 #define DK_UTILIZATION_SIZE 32
+#define DK_TX_FEEDBACK 10
+#define DK_TX_ACKNOWLEDGED 1
+#define DK_TX_UNCONFIRMED 2
+#define DK_TX_OUTCOME_UNKNOWN 3
+#define DK_TX_FEEDBACK_DIAGNOSTICS_SIZE 33
 #define DK_TX_READY 0
 #define DK_TX_QUEUED 1
 #define DK_TX_REJECTED 2
@@ -54,11 +65,12 @@
 #define DK_TX_KEEPALIVE 0
 #define DK_TX_CANCEL 1
 #define DK_TX_REPEAT_CAPABILITY 1
-#define DK_TX_MAX_HZ 10
+#define DK_TX_LEGACY_MAX_HZ 10
+#define DK_TX_MAX_HZ 1000000  // One microsecond per interval.
 #define DK_TX_MIN_DURATION_MS 100
 #define DK_TX_MAX_DURATION_MS 600000
-#define DK_MAX_RAW 155
-#define DK_MAX_WIRE 157
+#define DK_MAX_RAW 219
+#define DK_MAX_WIRE 221
 
 static inline void dk_put(uint8_t *p, uint64_t value, size_t n)
 {
@@ -85,6 +97,15 @@ static inline bool dk_merge_masked(uint8_t *wanted, const uint8_t *actual,
     return changed;
 }
 
+static inline bool dk_matches_mask(const uint8_t *wanted, const uint8_t *actual,
+                                   const uint8_t *mask, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        if ((wanted[i] ^ actual[i]) & mask[i]) return false;
+    }
+    return true;
+}
+
 static inline uint16_t dk_crc(const uint8_t *p, size_t n)
 {
     uint16_t crc = 0xffff;
@@ -101,7 +122,8 @@ static inline size_t dk_encode(uint8_t *raw, size_t n, uint8_t *wire)
 {
     if (n > DK_MAX_RAW - 2) return 0;
     if ((raw[1] == DK_TX_REPEAT || raw[1] == DK_TX_AUTO) &&
-        (n != (size_t)(25 + 2 * raw[24]) || raw[24] > 64)) return 0;
+        (n < 25 || raw[24] > 64 ||
+         (n != (size_t)(25 + 2 * raw[24]) && n != (size_t)(25 + 3 * raw[24])))) return 0;
     dk_put(raw + n, dk_crc(raw, n), 2);
     n += 2;
     size_t code_at = 0, out = 1;
@@ -154,6 +176,11 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
             if (dk_get(raw + i, 2) > 1000) return 0;
         return out;
     }
+    if (raw[1] == DK_TX_FEEDBACK)
+        return (out == 23 || (out == DK_TX_FEEDBACK_DIAGNOSTICS_SIZE + 2 &&
+                             raw[20] >= DK_TX_UNCONFIRMED)) &&
+            raw[3] == 0 && raw[20] <= DK_TX_OUTCOME_UNKNOWN &&
+            ((dk_get(raw + 8, 4) == 0) == (raw[20] == DK_TX_READY)) ? out : 0;
     if (raw[1] == DK_TX_RESULT)
         return out == 23 && raw[3] == 0 && raw[20] <= DK_TX_PREVIOUS_FAILED &&
             ((dk_get(raw + 8, 4) == 0) == (raw[20] == DK_TX_READY)) ? out : 0;
@@ -169,7 +196,8 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
          raw[1] != DK_TX_AUTO) ||
         out < 27 || raw[24] > 64 || (raw[3] & ~15)) return 0;
     const bool timed = raw[1] == DK_TX_REPEAT || raw[1] == DK_TX_AUTO;
-    if (out != (size_t)(27 + raw[24] * (timed ? 2 : 1))) return 0;
+    const bool has_selector = timed && out == (size_t)(27 + 3 * raw[24]);
+    if (out != (size_t)(27 + raw[24] * (timed ? 2 : 1)) && !has_selector) return 0;
     if (!(raw[3] & 4) && raw[24] > 8) return 0;
     if ((raw[3] & 4) && ((raw[3] & 2) ||
         (raw[24] > 8 && raw[24] != 12 && raw[24] != 16 && raw[24] != 20 &&
@@ -182,7 +210,11 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
             (raw[1] == DK_TX_REPEAT ? (!hz || hz > DK_TX_MAX_HZ) : hz != 0) ||
             duration < DK_TX_MIN_DURATION_MS || duration > DK_TX_MAX_DURATION_MS) return 0;
         bool any_mask = false;
-        for (uint8_t i = 0; i < raw[24]; i++) any_mask |= raw[25 + raw[24] + i] != 0;
+        for (uint8_t i = 0; i < raw[24]; i++) {
+            uint8_t overwrite = raw[25 + raw[24] + i];
+            if (has_selector && (overwrite & raw[25 + 2 * raw[24] + i])) return 0;
+            any_mask |= overwrite != 0;
+        }
         if (!any_mask) return 0;
     }
     return out;
