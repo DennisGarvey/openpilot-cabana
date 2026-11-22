@@ -15,6 +15,7 @@
  * SPI, and CAN buses 0/1, each as u16 per mille over the last sample interval.
  * TX feedback uses the TX result layout. A zero sequence announces support;
  * a nonzero sequence reports the outcome of one individual transmit attempt.
+ * An acknowledged TX frame uses the Frame layout and the TX request sequence.
  * Failure feedback may append FIFO status, bus diagnostics and error counters
  * as three u32 controller register snapshots.
  * Flags: bit0 extended, bit1 RTR, bit2 FD, bit3 BRS.
@@ -46,6 +47,7 @@
 #define DK_UTILIZATION 9
 #define DK_UTILIZATION_SIZE 32
 #define DK_TX_FEEDBACK 10
+#define DK_TX_FRAME 11
 #define DK_TX_ACKNOWLEDGED 1
 #define DK_TX_UNCONFIRMED 2
 #define DK_TX_OUTCOME_UNKNOWN 3
@@ -193,8 +195,9 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
         return out == 23 && raw[3] == 0 && dk_get(raw + 8, 4) != 0 &&
             dk_get(raw + 12, 8) == 0 && raw[20] <= DK_TX_CANCEL ? out : 0;
     if ((raw[1] != DK_FRAME && raw[1] != DK_TX_REQUEST && raw[1] != DK_TX_REPEAT &&
-         raw[1] != DK_TX_AUTO) ||
+         raw[1] != DK_TX_AUTO && raw[1] != DK_TX_FRAME) ||
         out < 27 || raw[24] > 64 || (raw[3] & ~15)) return 0;
+    if (raw[1] == DK_TX_FRAME && !dk_get(raw + 8, 4)) return 0;
     const bool timed = raw[1] == DK_TX_REPEAT || raw[1] == DK_TX_AUTO;
     const bool has_selector = timed && out == (size_t)(27 + 3 * raw[24]);
     if (out != (size_t)(27 + raw[24] * (timed ? 2 : 1)) && !has_selector) return 0;

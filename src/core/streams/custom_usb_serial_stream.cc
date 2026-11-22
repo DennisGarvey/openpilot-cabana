@@ -142,13 +142,20 @@ void CustomUsbSerialStream::cancelRepeat() {
   }
 }
 
-QString CustomUsbSerialStream::txStatus(TxState* state) const {
+QString CustomUsbSerialStream::txStatus(TxState* state, bool include_result) const {
   std::lock_guard lock(stats_mutex_);
   auto result = [state](TxState current, const QString& message) {
     if (state) *state = current;
     return message;
   };
-  if (!error_.isEmpty()) return result(TxState::Error, tx_status_);
+  if (!error_.isEmpty()) return result(TxState::Error, include_result ? tx_status_ : error_);
+  if (!include_result) {
+    if (repeat_active_ || (tx_in_flight_ && !tx_deadline_.hasExpired()))
+      return result(TxState::Waiting, tr("Waiting for the previous send to finish."));
+    if (tx_capability_.hasExpired())
+      return result(TxState::Waiting, tr("Waiting for USB transmission support."));
+    return result(TxState::Ready, {});
+  }
   if (!repeat_active_ && tx_in_flight_ && tx_deadline_.hasExpired())
     return result(TxState::Error, tr("Response timed out. Transmission outcome unknown."));
   if (tx_capability_.hasExpired() && !tx_in_flight_)
@@ -294,6 +301,7 @@ void CustomUsbSerialStream::streamThread() {
         continue;
       }
       const uint8_t bus = raw[2];
+      const bool tx_frame = raw[1] == DK_TX_FRAME;
       const uint32_t boot = dk_get(raw + 4, 4), sequence = dk_get(raw + 8, 4);
       const uint64_t device_ns = dk_get(raw + 12, 8) * 1000;
       {
@@ -457,22 +465,24 @@ void CustomUsbSerialStream::streamThread() {
           usb_aborts_ = usb_base + dk_get(raw + 28, 4);
           continue;
         }
-        if (have_sequence[bus]) {
-          const uint32_t delta = sequence - last_sequence[bus];
-          if (delta == 0 || delta >= 0x80000000U) {
-            corrupt_++;
-            continue;
+        if (!tx_frame) {
+          if (have_sequence[bus]) {
+            const uint32_t delta = sequence - last_sequence[bus];
+            if (delta == 0 || delta >= 0x80000000U) {
+              corrupt_++;
+              continue;
+            }
+            gaps_[bus] += delta - 1;
           }
-          gaps_[bus] += delta - 1;
-        }
-        have_sequence[bus] = true;
-        last_sequence[bus] = sequence;
-        frames_[bus]++;
-        if (!(raw[3] & 2)) {
-          constexpr size_t recent_frame_limit = 64;
-          auto& recent = recent_data_frames_[MessageId(bus, dk_get(raw + 20, 4))];
-          if (recent.size() == recent_frame_limit) recent.pop_front();
-          recent.push_back({QByteArray(reinterpret_cast<const char*>(raw + 25), raw[24]), raw[3], boot});
+          have_sequence[bus] = true;
+          last_sequence[bus] = sequence;
+          frames_[bus]++;
+          if (!(raw[3] & 2)) {
+            constexpr size_t recent_frame_limit = 64;
+            auto& recent = recent_data_frames_[MessageId(bus, dk_get(raw + 20, 4))];
+            if (recent.size() == recent_frame_limit) recent.pop_front();
+            recent.push_back({QByteArray(reinterpret_cast<const char*>(raw + 25), raw[24]), raw[3], boot});
+          }
         }
       }
       // Playback resumes strictly after its cursor. Give tied or late USB
@@ -482,7 +492,7 @@ void CustomUsbSerialStream::streamThread() {
       auto event = message.initEvent();
       event.setLogMonoTime(last_ns);
       auto can = event.initCan(1);
-      can[0].setSrc(bus);
+      can[0].setSrc(tx_frame ? bus + TxSourceOffset : bus);
       can[0].setAddress(dk_get(raw + 20, 4));
       // RTR carries no payload.
       can[0].setDat(kj::arrayPtr(raw + 25, (raw[3] & 2) ? 0 : raw[24]));

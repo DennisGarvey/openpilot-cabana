@@ -8,6 +8,7 @@
 
 class CustomUsbSerialStream : public LiveStream {
  public:
+  static constexpr uint8_t TxSourceOffset = 128;
   CustomUsbSerialStream(QObject* parent, const QString& port, qint32 baud_rate = 8000000);
   ~CustomUsbSerialStream() override { stop(); }
   QString routeName() const override { return QStringLiteral("Custom USB Serial: %1").arg(port_); }
@@ -44,7 +45,7 @@ class CustomUsbSerialStream : public LiveStream {
                  std::optional<RepeatTiming> repeat = std::nullopt,
                  QByteArray signal_mask = {}, QByteArray selector_mask = {});
   enum class TxState { Ready, Waiting, Queued, Acknowledged, Error };
-  QString txStatus(TxState* state = nullptr) const;
+  QString txStatus(TxState* state = nullptr, bool include_result = true) const;
 
  private:
   void streamThread() override;

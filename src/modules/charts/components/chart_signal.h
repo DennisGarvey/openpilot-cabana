@@ -21,6 +21,7 @@ class ChartSignal {
   MessageId msg_id;
   const dbc::Signal* sig = nullptr;
   QXYSeries* series = nullptr;
+  QScatterSeries* acknowledged_series = nullptr;
   std::vector<QPointF> vals;
   std::vector<QPointF> step_vals;
   QPointF track_pt{};
@@ -36,6 +37,9 @@ class ChartSignal {
   void updatePointsVisible(double sec_per_px);
 
  private:
+  std::vector<QPointF> acknowledged_points_;
+  std::pair<double, double> acknowledged_range_{-1, -1};
+  bool acknowledged_dirty_ = true;
   int rendered_width_ = 0;
   std::pair<double, double> rendered_range_{0, 0};
   bool series_dirty_ = true;

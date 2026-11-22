@@ -14,6 +14,7 @@
 #include <QRubberBand>
 #include <QScreen>
 #include <QWindow>
+#include <QtCharts/QLegendMarker>
 #include <algorithm>
 #include <limits>
 
@@ -398,19 +399,28 @@ void ChartView::drawTimeline(QPainter* painter) {
 }
 
 void ChartView::drawSignalValue(QPainter* painter) {
-  auto item_group = qgraphicsitem_cast<QGraphicsItemGroup*>(chart_->legend()->childItems()[0]);
-  assert(item_group != nullptr);
-  auto legend_markers = item_group->childItems();
-  assert(legend_markers.size() == chart_->sigs_.size());
+  const auto legend_items = chart_->legend()->childItems();
+  const auto group = std::ranges::find_if(legend_items, [](auto* item) {
+    return qgraphicsitem_cast<QGraphicsItemGroup*>(item) != nullptr;
+  });
+  if (group == legend_items.end()) return;
+
+  const auto markers = chart_->legend()->markers();
+  const auto marker_items = (*group)->childItems();
+  if (markers.size() != marker_items.size()) return;
 
   painter->setFont(signal_value_font);
   painter->setPen(chart_->legend()->labelColor());
-  int i = 0;
-  for (auto& s : chart_->sigs_) {
+  for (qsizetype i = 0; i < markers.size(); ++i) {
+    if (!markers[i]->isVisible()) continue;
+    const auto signal = std::ranges::find(chart_->sigs_, markers[i]->series(), &ChartSignal::series);
+    if (signal == chart_->sigs_.end()) continue;
+
+    const auto& s = *signal;
     auto it = std::lower_bound(s.vals.crbegin(), s.vals.crend(), cur_sec,
                                [](auto& p, double x) { return p.x() > x + EPSILON; });
     QString value = (it != s.vals.crend() && it->x() >= chart_->axis_x_->min()) ? s.sig->formatValue(it->y()) : "--";
-    QRectF marker_rect = legend_markers[i++]->sceneBoundingRect();
+    QRectF marker_rect = marker_items[i]->sceneBoundingRect();
     QRectF value_rect(marker_rect.bottomLeft() - QPoint(0, 1), marker_rect.size());
     QString elided_val = painter->fontMetrics().elidedText(value, Qt::ElideRight, value_rect.width());
     painter->drawText(value_rect, Qt::AlignHCenter | Qt::AlignTop, elided_val);

@@ -3,9 +3,11 @@
 #include <QDialog>
 #include <QLabel>
 #include <QTimer>
+#include <QtCharts/QLegendMarker>
 #include <iostream>
 
 #include "core/streams/custom_usb_serial_stream.h"
+#include "modules/charts/charts_panel.h"
 #include "modules/settings/settings.h"
 #include "modules/streams/custom_usb_serial.h"
 
@@ -154,10 +156,63 @@ int main(int argc, char** argv) {
       app.exit(18);
       return;
     }
+    CustomUsbSerialStream::TxState fresh_state;
+    if (!stream.txStatus(&fresh_state, false).isEmpty() || fresh_state != CustomUsbSerialStream::TxState::Ready) {
+      app.exit(23);
+      return;
+    }
     stream.stop();
     std::cout << stream.captureStatus().toStdString() << '\n' << stream.captureDetails().toStdString() << '\n';
     const auto& events = stream.allEvents();
-    const size_t expected_events = 8;
+    const bool has_ack_frame = feedback == "ack";
+    const int ack_frames = has_ack_frame ? (repeat ? 2 : 1) : 0;
+    const size_t expected_events = 8 + ack_frames;
+    if (has_ack_frame) {
+      const auto& sent_frames = stream.events(MessageId(1 + CustomUsbSerialStream::TxSourceOffset, 0x22222));
+      if (sent_frames.size() != ack_frames || sent_frames.front()->size != 64 || sent_frames.front()->dat[0] != 0x12 ||
+          stream.latestDataFrame(MessageId(1, 0x22222))->data.back() != char(0xa4)) {
+        app.exit(19);
+        return;
+      }
+      dbc::Signal signal;
+      signal.size = 8;
+      signal.is_little_endian = true;
+      signal.factor = 1;
+      signal.update();
+      ChartsPanel charts;
+      charts.resize(800, 400);
+      charts.show();
+      charts.showChart(MessageId(1, 0x22222), &signal, true, false);
+      auto* view = charts.findChild<ChartView*>();
+      if (!view) {
+        app.exit(21);
+        return;
+      }
+      auto* chart = view->chart();
+      auto& chart_signal = chart->sigs_.front();
+      auto* acknowledged = new QScatterSeries;
+      chart_signal.acknowledged_series = acknowledged;
+      chart->addSeries(acknowledged);
+      for (auto* axis : chart_signal.series->attachedAxes()) acknowledged->attachAxis(axis);
+      for (auto* marker : chart->legend()->markers(acknowledged)) marker->setVisible(false);
+      // Paint with an empty TX legend entry, then paint again with a sample.
+      if (view->viewport()->grab().isNull()) {
+        app.exit(22);
+        return;
+      }
+      chart_signal.prepareData(&stream.eventsMap(), 0, 1);
+      chart_signal.updateSeries(SeriesType::Line, 0, 1);
+      chart_signal.updateRange(0, 1);
+      if (view->viewport()->grab().isNull() ||
+          chart_signal.series->count() != 2 + ack_frames || acknowledged->count() != ack_frames ||
+          chart_signal.series->at(0).y() != 0xa5 || chart_signal.series->at(2).y() != 0x12 ||
+          acknowledged->at(0).y() != 0x12 ||
+          (repeat && acknowledged->at(1).y() != 0x34) ||
+          chart_signal.min_value != 0x12 || chart_signal.max_value != 0xa5) {
+        app.exit(20);
+        return;
+      }
+    }
     if (events.size() != expected_events) {
       std::cerr << "Expected " << expected_events << " frames, got " << events.size() << '\n';
       app.exit(1);

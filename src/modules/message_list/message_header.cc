@@ -48,6 +48,9 @@ void MessageHeader::updateGeometries() {
     edit->setPlaceholderText(tr("Filter %1").arg(col_name));
     edit->setToolTip(getFilterTooltip(i));
     connect(edit, &DebouncedLineEdit::debouncedTextEdited, this, &MessageHeader::updateFilters);
+    if (i == MessageModel::Column::NAME) {
+      connect(edit, &QLineEdit::textChanged, this, &MessageHeader::nameFilterChanged);
+    }
     editors_[i] = edit;
   }
 

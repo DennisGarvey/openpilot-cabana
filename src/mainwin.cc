@@ -96,6 +96,8 @@ void MainWindow::setupConnections() {
   connect(connection_rate_timer_, &QTimer::timeout, this, &MainWindow::updateConnectionRate);
 
   connect(charts_panel, &ChartsPanel::openMessage, message_list_, &MessageList::selectMessage);
+  connect(message_list_, &MessageList::nameFilterChanged, inspector_widget_->getMessageView(),
+          &MessageView::setMessageNameFilter);
   connect(inspector_widget_->getMessageView(), &MessageView::activeMessageChanged, message_list_,
           &MessageList::selectMessage);
   connect(inspector_widget_->getMessageView(), &MessageView::lastTabClosed, message_list_,

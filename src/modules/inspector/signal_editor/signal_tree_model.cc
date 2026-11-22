@@ -43,10 +43,10 @@ void SignalTreeModel::insertItem(int pos, const MessageId& id, const dbc::Signal
   root->children.insert(pos, item);
 }
 
-void SignalTreeModel::setMessage(const MessageId& id) {
+void SignalTreeModel::setMessage(const MessageId& id, const QString& filter) {
   msg_id = id;
   if (pinned_only_) return;
-  filter_str.clear();
+  filter_str = filter;
   rebuild();
 }
 

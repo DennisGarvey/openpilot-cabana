@@ -350,6 +350,7 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   }
   using TxState = CustomUsbSerialStream::TxState;
   QString input_error;
+  bool submitted = false;
   std::optional<TxState> displayed_state;
   auto refresh = [&] {
     const auto* signal = getSignal();
@@ -365,7 +366,7 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
       state = TxState::Error;
       message = tr("USB stream closed.");
     } else if (stream->repeatPending()) {
-      message = stream->txStatus(&state);
+      message = stream->txStatus(&state, submitted);
     } else if (!signal) {
       state = TxState::Error;
       message = tr("Signal definition is unavailable.");
@@ -380,7 +381,7 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
       state = TxState::Error;
       message = input_error;
     } else {
-      message = stream->txStatus(&state);
+      message = stream->txStatus(&state, submitted);
       if (message.isEmpty()) message = has_value ? tr("Ready to send.") : tr("Choose or enter a value to send.");
     }
     if (displayed_state == state && status->text() == message) return;
@@ -425,6 +426,8 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
       if (!stream->sendFrame(id.source, id.address, frame->flags, frame->data, frame->boot_id,
                              timing, signalMask(*signal, frame->data.size()), selector)) {
         input_error = tr("The frame could not be queued. Check the USB connection and try again.");
+      } else {
+        submitted = true;
       }
     }
     refresh();

@@ -18,6 +18,7 @@ class MessageView : public QWidget {
  public:
   MessageView(ChartsPanel* charts, QWidget* parent);
   void setMessage(const MessageId& message_id);
+  void setMessageNameFilter(const QString& text) { signal_editor->setMessageNameFilter(text); }
   void refresh();
   std::pair<QString, QStringList> serializeMessageIds() const;
   void restoreTabs(const QString& active_msg_id, const QStringList& msg_ids, bool include_unknown = false);

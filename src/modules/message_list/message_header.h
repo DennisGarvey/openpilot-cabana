@@ -15,6 +15,9 @@ class MessageHeader : public QHeaderView {
   void setModel(QAbstractItemModel* model) override;
   QSize sizeHint() const override;
 
+ signals:
+  void nameFilterChanged(const QString& text);
+
  public slots:
   void updateFilters();
   void updateHeaderPositions();

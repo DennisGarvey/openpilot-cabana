@@ -23,6 +23,7 @@ MessageList::MessageList(QWidget* parent) : QWidget(parent) {
   table_ = new MessageTable(this);
   model_ = new MessageModel(this);
   header_ = new MessageHeader(this);
+  connect(header_, &MessageHeader::nameFilterChanged, this, &MessageList::nameFilterChanged);
   delegate_ = new MessageDelegate(table_, CallerType::MessageList);
   menu_ = new QMenu(this);
 

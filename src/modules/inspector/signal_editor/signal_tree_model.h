@@ -75,7 +75,7 @@ class SignalTreeModel : public QAbstractItemModel {
   Qt::ItemFlags flags(const QModelIndex& index) const override;
   bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
 
-  void setMessage(const MessageId& id);
+  void setMessage(const MessageId& id, const QString& filter = {});
   void updateValues(const std::set<MessageId>* ids);
   void updateSparklines(int first_row, int last_row, const QSize& size);
 

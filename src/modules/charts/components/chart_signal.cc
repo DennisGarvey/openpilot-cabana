@@ -2,7 +2,11 @@
 
 #include <array>
 #include <cmath>
+#include <QtCharts/QChart>
+#include <QtCharts/QLegend>
+#include <QtCharts/QLegendMarker>
 
+#include "core/streams/custom_usb_serial_stream.h"
 #include "modules/system/stream_manager.h"
 
 static void appendCanEvents(const dbc::Signal* sig, const std::vector<const CanEvent*>& events,
@@ -25,6 +29,9 @@ static void appendCanEvents(const dbc::Signal* sig, const std::vector<const CanE
 void ChartSignal::prepareData(const MessageEventsMap* msg_new_events, double min_x, double max_x) {
   // If no new events provided, we are doing a full refresh/clear
   if (!msg_new_events) {
+    acknowledged_points_.clear();
+    acknowledged_dirty_ = true;
+    last_range_ = {-1, -1};
     vals.clear();
     step_vals.clear();
     series_bounds.clear();
@@ -33,14 +40,40 @@ void ChartSignal::prepareData(const MessageEventsMap* msg_new_events, double min
 
   auto* can = StreamManager::stream();
   auto events = msg_new_events ? msg_new_events : &can->eventsMap();
-  auto it = events->find(msg_id);
-  if (it == events->end() || it->second.empty()) return;
+  std::vector<const CanEvent*> sent, merged;
+  if (acknowledged_series) {
+    const int source = msg_id.source + CustomUsbSerialStream::TxSourceOffset;
+    if (auto tx = events->find(MessageId(source, msg_id.address)); tx != events->end()) {
+      for (const auto* event : tx->second) {
+        if (!event->size) continue;
+        if (auto value = sig->parse(event->dat, event->size)) {
+          sent.push_back(event);
+          acknowledged_points_.emplace_back(can->toSeconds(event->mono_ns), *value);
+          acknowledged_dirty_ = true;
+        }
+      }
+    }
+  }
 
-  if (vals.empty() || can->toSeconds(it->second.back()->mono_ns) > vals.back().x()) {
-    appendCanEvents(sig, it->second, vals, step_vals, series_bounds);
+  const auto received = events->find(msg_id);
+  const std::vector<const CanEvent*>* trace = &sent;
+  if (received != events->end()) {
+    if (sent.empty()) {
+      trace = &received->second;
+    } else {
+      merged.reserve(received->second.size() + sent.size());
+      std::ranges::merge(received->second, sent, std::back_inserter(merged), {},
+                         &CanEvent::mono_ns, &CanEvent::mono_ns);
+      trace = &merged;
+    }
+  }
+  if (trace->empty()) return;
+
+  if (vals.empty() || can->toSeconds(trace->back()->mono_ns) > vals.back().x()) {
+    appendCanEvents(sig, *trace, vals, step_vals, series_bounds);
   } else {
     std::vector<QPointF> tmp_vals, tmp_step_vals;
-    appendCanEvents(sig, it->second, tmp_vals, tmp_step_vals, series_bounds);
+    appendCanEvents(sig, *trace, tmp_vals, tmp_step_vals, series_bounds);
 
     if (tmp_vals.empty()) return;
 
@@ -62,6 +95,17 @@ void ChartSignal::prepareData(const MessageEventsMap* msg_new_events, double min
 
 void ChartSignal::updateSeries(SeriesType series_type, double min_x, double max_x, int pixel_width) {
   const std::pair<double, double> range{min_x, max_x};
+  if (acknowledged_series && (acknowledged_dirty_ || acknowledged_range_ != range)) {
+    const auto first = std::ranges::lower_bound(acknowledged_points_, min_x, {}, &QPointF::x);
+    const auto last = std::ranges::upper_bound(first, acknowledged_points_.end(), max_x, {}, &QPointF::x);
+    acknowledged_series->replace(QList<QPointF>(first, last));
+    acknowledged_range_ = range;
+    acknowledged_dirty_ = false;
+    if (auto* chart = acknowledged_series->chart()) {
+      for (auto* marker : chart->legend()->markers(acknowledged_series))
+        marker->setVisible(!acknowledged_points_.empty() && series->isVisible());
+    }
+  }
   if (!series_dirty_ && last_series_ == series && last_series_type_ == series_type && rendered_range_ == range && rendered_width_ == pixel_width) return;
   const auto& points = series_type == SeriesType::StepLine ? step_vals : vals;
   auto first = std::ranges::lower_bound(points, min_x, {}, &QPointF::x);
@@ -111,19 +155,10 @@ void ChartSignal::updateRange(double min_x, double max_x) {
 
   min_value = std::numeric_limits<double>::max();
   max_value = std::numeric_limits<double>::lowest();
-  if (vals.empty()) {
-    return;
-  }
-
-  auto first = std::ranges::lower_bound(vals, min_x, {}, &QPointF::x);
-  auto last = std::ranges::lower_bound(first, vals.end(), max_x, {}, &QPointF::x);
-
-  int l_idx = std::ranges::distance(vals.begin(), first);
-  int r_idx = std::ranges::distance(vals.begin(), last) - 1;
-
-  if (l_idx <= r_idx) {
-    // Hierarchical query is O(log N) for both Live and Log data
-    auto node = series_bounds.query(l_idx, r_idx, vals);
+  const auto first = std::ranges::lower_bound(vals, min_x, {}, &QPointF::x);
+  const auto last = std::ranges::upper_bound(first, vals.end(), max_x, {}, &QPointF::x);
+  if (first != last) {
+    const auto node = series_bounds.query(first - vals.begin(), last - vals.begin() - 1, vals);
     min_value = node.min;
     max_value = node.max;
   }

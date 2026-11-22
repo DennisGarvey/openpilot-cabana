@@ -14,12 +14,15 @@
 #include "signal_tree_model.h"
 #include "widgets/debounced_line_edit.h"
 
+class QToolButton;
+
 class SignalEditor : public QFrame {
   Q_OBJECT
 
  public:
   SignalEditor(ChartsPanel* charts, QWidget* parent);
   void setMessage(const MessageId& id);
+  void setMessageNameFilter(const QString& text);
   void clearMessage();
   void selectSignal(const dbc::Signal* sig, bool expand = false);
   void updateState(const std::set<MessageId>* msgs = nullptr);
@@ -49,6 +52,9 @@ class SignalEditor : public QFrame {
   QLabel* sparkline_label;
   QSlider* sparkline_range_slider;
   DebouncedLineEdit* filter_edit;
+  QToolButton* sync_filter_btn;
+  QString message_name_filter;
+  QString manual_signal_filter;
   QLabel* signal_count_lb;
   SignalTreeDelegate* delegate;
   ToolButton* collapse_btn;

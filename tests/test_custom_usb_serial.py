@@ -42,8 +42,8 @@ def decode(wire):
     return raw[:-2]
 
 
-def frame(bus, sequence, timestamp, address, data, flags=0, boot=123):
-    return encode(struct.pack('<BBBBIIQIB', 1, 0, bus, flags, boot, sequence, timestamp, address, len(data)) + data)
+def frame(bus, sequence, timestamp, address, data, flags=0, boot=123, kind=0):
+    return encode(struct.pack('<BBBBIIQIB', 1, kind, bus, flags, boot, sequence, timestamp, address, len(data)) + data)
 
 
 def read_record(master, pending):
@@ -123,8 +123,11 @@ def main():
                 assert kind == (7 if automatic else 4)
                 result_kind = 8 if automatic else 6
                 tx_result(master, result_kind, 1, sequence, 7)
-                if feedback:
+                if feedback == 'ack':
+                    os.write(master, frame(1, sequence, 140, 0x22222, request[25:89], flags=13, boot=124, kind=11))
                     tx_result(master, 10, 1, sequence, 1)
+                    os.write(master, frame(1, sequence, 150, 0x22222, b'4' + request[26:89],
+                                           flags=13, boot=124, kind=11))
                     tx_result(master, 10, 1, sequence, 1)
                 control = lambda opcode: struct.pack('<BBBBIIQB', 1, 5, 1, 0, 124, sequence, 0, opcode)
                 assert read_record(master, pending) == control(0)
@@ -149,6 +152,9 @@ def main():
                         os.write(master, encode(struct.pack('<BBBBIIQBIII', 1, 10, 1, 0, 124, sequence,
                                                             102, 2, 0x30, 1 << 18, 8 << 8)))
                     else:
+                        if feedback == 'ack':
+                            os.write(master, frame(1, sequence, 140, 0x22222, request[25:89], flags=13,
+                                                   boot=124, kind=11))
                         tx_result(master, 10, 1, sequence, {'ack': 1, 'unknown': 3}[feedback])
             stdout, stderr = process.communicate(timeout=8)
             print(stdout.decode())

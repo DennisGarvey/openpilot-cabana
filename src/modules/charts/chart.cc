@@ -8,6 +8,8 @@
 #include <QRandomGenerator>
 #include <QStyle>
 
+#include "core/streams/custom_usb_serial_stream.h"
+#include "modules/system/stream_manager.h"
 #include "widgets/common.h"
 #include "widgets/tool_button.h"
 
@@ -104,7 +106,17 @@ bool Chart::addSignal(const MessageId& msg_id, const dbc::Signal* sig) {
   if (hasSignal(msg_id, sig)) return false;
 
   QXYSeries* series = createSeries(series_type, sig->color);
-  sigs_.emplace_back(msg_id, sig, series);
+  auto& chart_signal = sigs_.emplace_back(msg_id, sig, series);
+  if (msg_id.source < 2 && dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
+    auto* acknowledged = new QScatterSeries;
+    acknowledged->setName(tr("%1 · TX ACK").arg(sig->name.toHtmlEscaped()));
+    acknowledged->setMarkerShape(QScatterSeries::MarkerShapeRectangle);
+    acknowledged->setMarkerSize(7);
+    chart_signal.acknowledged_series = acknowledged;
+    attachAcknowledgedSeries(acknowledged);
+    acknowledged->setColor(Qt::transparent);
+    acknowledged->setBorderColor(series->color());
+  }
 
   prepareData(sig);
   updateSeries(sig);
@@ -120,6 +132,10 @@ void Chart::takeSignals(std::vector<ChartSignal>&& source_sigs) {
       old_chart->removeSeries(s.series);
     }
     attachSeries(s.series);
+    if (s.acknowledged_series) {
+      if (auto* old_chart = s.acknowledged_series->chart()) old_chart->removeSeries(s.acknowledged_series);
+      attachAcknowledgedSeries(s.acknowledged_series);
+    }
   }
 
   std::move(source_sigs.begin(), source_sigs.end(), std::back_inserter(sigs_));
@@ -132,6 +148,10 @@ void Chart::removeIf(std::function<bool(const ChartSignal& s)> predicate) {
     if (predicate(*it)) {
       removeSeries(it->series);
       it->series->deleteLater();
+      if (it->acknowledged_series) {
+        removeSeries(it->acknowledged_series);
+        it->acknowledged_series->deleteLater();
+      }
       it = sigs_.erase(it);
     } else {
       ++it;
@@ -211,6 +231,10 @@ void Chart::setTheme(QChart::ChartTheme theme) {
   axis_y_->setLineVisible(false);
   for (auto& s : sigs_) {
     s.series->setColor(s.sig->color);
+    if (s.acknowledged_series) {
+      s.acknowledged_series->setColor(Qt::transparent);
+      s.acknowledged_series->setBorderColor(s.series->color());
+    }
   }
   updateTitle();
   resetCache();
@@ -310,6 +334,11 @@ void Chart::onMarkerClicked() {
   if (sigs_.size() > 1) {
     auto series = marker->series();
     series->setVisible(!series->isVisible());
+    for (auto& signal : sigs_) {
+      if (signal.series == series && signal.acknowledged_series) {
+        signal.acknowledged_series->setVisible(series->isVisible());
+      }
+    }
     marker->setVisible(true);
     syncUI();
   }
@@ -386,6 +415,13 @@ void Chart::attachSeries(QXYSeries* series) {
   if (glwidget && !glwidget->testAttribute(Qt::WA_TransparentForMouseEvents)) {
     glwidget->setAttribute(Qt::WA_TransparentForMouseEvents);
   }
+}
+
+void Chart::attachAcknowledgedSeries(QScatterSeries* series) {
+  addSeries(series);
+  series->attachAxis(axis_x_);
+  series->attachAxis(axis_y_);
+  for (auto* marker : legend()->markers(series)) marker->setVisible(series->count() > 0);
 }
 
 void Chart::setSeriesColor(QXYSeries* series, QColor color) {

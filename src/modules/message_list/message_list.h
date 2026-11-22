@@ -26,6 +26,7 @@ class MessageList : public QWidget {
  signals:
   void msgSelectionChanged(const MessageId& message_id);
   void titleChanged(const QString& title);
+  void nameFilterChanged(const QString& text);
 
  protected:
   // Construction helpers

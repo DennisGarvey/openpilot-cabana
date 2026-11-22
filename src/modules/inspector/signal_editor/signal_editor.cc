@@ -11,6 +11,7 @@
 #include <QScrollBar>
 #include <QShortcut>
 #include <QSignalBlocker>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include "core/commands/commands.h"
@@ -52,12 +53,6 @@ SignalEditor::SignalEditor(ChartsPanel* charts, QWidget* parent) : QFrame(parent
   QVBoxLayout* main_layout = new QVBoxLayout(this);
   main_layout->setContentsMargins(0, 0, 0, 0);
   main_layout->setSpacing(0);
-  main_layout->addWidget(createToolbar());
-
-  QFrame* line = new QFrame(this);
-  line->setFrameStyle(QFrame::HLine | QFrame::Sunken);
-  main_layout->addWidget(line);
-
   auto* splitter = new PanelSplitter(Qt::Vertical, this);
   pinned_section = new QWidget(splitter);
   auto* pins_layout = new QVBoxLayout(pinned_section);
@@ -66,7 +61,17 @@ SignalEditor::SignalEditor(ChartsPanel* charts, QWidget* parent) : QFrame(parent
   title->setContentsMargins(4, 0, 4, 0);
   pins_layout->addWidget(title);
   pins_layout->addWidget(pinned_tree);
-  splitter->addWidget(tree);
+
+  auto* regular_section = new QWidget(splitter);
+  auto* regular_layout = new QVBoxLayout(regular_section);
+  regular_layout->setContentsMargins(0, 0, 0, 0);
+  regular_layout->setSpacing(0);
+  regular_layout->addWidget(createToolbar());
+  auto* line = new QFrame(regular_section);
+  line->setFrameStyle(QFrame::HLine | QFrame::Sunken);
+  regular_layout->addWidget(line);
+  regular_layout->addWidget(tree, 1);
+  splitter->addWidget(regular_section);
   splitter->setStretchFactor(0, 0);
   splitter->setStretchFactor(1, 1);
   splitter->setSizes({150, 450});
@@ -141,7 +146,9 @@ QWidget* SignalEditor::createToolbar() {
   QHBoxLayout* hl = new QHBoxLayout(toolbar);
   hl->setContentsMargins(4, 4, 4, 4);
 
-  hl->addWidget(signal_count_lb = new QLabel());
+  signal_count_lb = new QLabel(tr("Signals: %1").arg(9999), toolbar);
+  signal_count_lb->setMinimumWidth(signal_count_lb->sizeHint().width());
+  hl->addWidget(signal_count_lb);
   filter_edit = new DebouncedLineEdit(this);
 
   QRegularExpression re("\\S+");
@@ -149,7 +156,16 @@ QWidget* SignalEditor::createToolbar() {
   filter_edit->setClearButtonEnabled(true);
   filter_edit->setPlaceholderText(tr("Filter signal..."));
   filter_edit->setToolTip(tr("Filter signals by name"));
-  hl->addWidget(filter_edit, 0, Qt::AlignCenter);
+  sync_filter_btn = new QToolButton(toolbar);
+  sync_filter_btn->setToolButtonStyle(Qt::ToolButtonTextOnly);
+  sync_filter_btn->setText(tr("Sync with Message Filter"));
+  sync_filter_btn->setCheckable(true);
+  sync_filter_btn->setToolTip(tr("Use the message list's name filter for regular signals"));
+  const int filter_height = std::max(filter_edit->sizeHint().height(), sync_filter_btn->sizeHint().height());
+  filter_edit->setFixedHeight(filter_height);
+  sync_filter_btn->setFixedHeight(filter_height);
+  hl->addWidget(filter_edit, 0, Qt::AlignVCenter);
+  hl->addWidget(sync_filter_btn, 0, Qt::AlignVCenter);
   hl->addStretch(1);
 
   // WARNING: increasing the maximum range can result in severe performance degradation.
@@ -177,7 +193,17 @@ void SignalEditor::setupConnections() {
               if (!selected.isEmpty()) other_selection->clear();
             });
   }
-  connect(filter_edit, &DebouncedLineEdit::debouncedTextEdited, model, &SignalTreeModel::setFilter);
+  connect(filter_edit, &DebouncedLineEdit::debouncedTextEdited, this, [this](const QString& text) {
+    if (!sync_filter_btn->isChecked()) model->setFilter(text);
+  });
+  connect(sync_filter_btn, &QToolButton::toggled, this, [this](bool synced) {
+    if (synced) manual_signal_filter = filter_edit->text();
+    const auto& text = synced ? message_name_filter : manual_signal_filter;
+    const QSignalBlocker blocker(filter_edit);
+    filter_edit->setText(text);
+    filter_edit->setEnabled(!synced);
+    model->setFilter(text);
+  });
   connect(sparkline_range_slider, &QSlider::valueChanged, this, &SignalEditor::setSparklineRange);
   connect(collapse_btn, &QPushButton::clicked, tree, &QTreeView::collapseAll);
   connect(model, &QAbstractItemModel::modelReset, this, &SignalEditor::rowsChanged);
@@ -214,9 +240,21 @@ void SignalEditor::setupConnections() {
   });
 }
 
+void SignalEditor::setMessageNameFilter(const QString& text) {
+  message_name_filter = text;
+  if (!sync_filter_btn->isChecked()) return;
+  const QSignalBlocker blocker(filter_edit);
+  filter_edit->setText(text);
+  model->setFilter(text);
+}
+
 void SignalEditor::setMessage(const MessageId& id) {
-  filter_edit->clear();
-  model->setMessage(id);
+  const bool synced = sync_filter_btn->isChecked();
+  if (!synced) {
+    const QSignalBlocker blocker(filter_edit);
+    filter_edit->clear();
+  }
+  model->setMessage(id, synced ? message_name_filter : QString{});
   pinned_model->setMessage(id);
   tree->scrollToTop();
 }
