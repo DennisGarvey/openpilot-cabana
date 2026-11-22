@@ -33,6 +33,52 @@ QByteArray signalMask(const dbc::Signal& signal, int data_size) {
   return mask;
 }
 
+struct SendStatus {
+  using TxState = CustomUsbSerialStream::TxState;
+
+  SendStatus(QDialog& dialog, QFormLayout& form) {
+    auto* status_area = new QWidget(&dialog);
+    auto* status_layout = new QHBoxLayout(status_area);
+    status_layout->setContentsMargins(0, 0, 0, 0);
+    indicator = new QLabel(QStringLiteral("●"), status_area);
+    indicator->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+    indicator->setFixedWidth(indicator->fontMetrics().horizontalAdvance(QStringLiteral("●")) + 4);
+    label = new QLabel(status_area);
+    label->setTextFormat(Qt::PlainText);
+    label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    label->setWordWrap(true);
+    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    label->setMinimumWidth(320);
+    label->setFixedHeight(3 * label->fontMetrics().lineSpacing());
+    status_layout->addWidget(indicator);
+    status_layout->addWidget(label, 1);
+    form.addRow(status_area);
+  }
+
+  void show(TxState state, const QString& message) {
+    if (displayed_state == state && label->text() == message) return;
+
+    QColor color = label->palette().color(QPalette::PlaceholderText);
+    switch (state) {
+      case TxState::Ready: color = label->palette().color(QPalette::Highlight); break;
+      case TxState::Waiting: break;
+      case TxState::Queued: break;
+      case TxState::Acknowledged: color = QColor("#2d9d64"); break;
+      case TxState::Error: color = QColor("#d85c5c"); break;
+    }
+    auto palette = indicator->palette();
+    palette.setColor(QPalette::WindowText, color);
+    indicator->setPalette(palette);
+    displayed_state = state;
+    label->setText(message);
+    label->setToolTip(message);
+  }
+
+  QLabel* indicator;
+  QLabel* label;
+  std::optional<TxState> displayed_state;
+};
+
 struct SendControls {
   SendControls(QDialog& dialog, QFormLayout& form, CustomUsbSerialStream* stream, bool allow_timed)
       : mode(new QComboBox(&dialog)), frequency(new QSpinBox(&dialog)), duration(new QDoubleSpinBox(&dialog)),
@@ -227,8 +273,6 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
   auto* extended = new QCheckBox(tr("29-bit ID"), &dialog);
   auto* fd = new QCheckBox(tr("CAN FD"), &dialog);
   auto* brs = new QCheckBox(tr("Bit rate switch"), &dialog);
-  auto* status = new QLabel(&dialog);
-  status->setWordWrap(true);
   form->addRow(tr("Bus"), bus);
   form->addRow(tr("DBC message"), messages);
   form->addRow(tr("CAN ID"), address);
@@ -237,7 +281,7 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
   form->addRow(fd);
   form->addRow(brs);
   const SendControls controls(dialog, *form, usb_stream, false);
-  form->addRow(status);
+  SendStatus status(dialog, *form);
 
   auto populate = [=] {
     const QSignalBlocker blocker(messages);
@@ -264,7 +308,28 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
     fd->setChecked(message->size > 8);
     data->setText(QStringLiteral("00 ").repeated(std::min(message->size, 64u)).trimmed());
   });
-  connect(controls.send, &QPushButton::clicked, &dialog, [=, &controls] {
+  using TxState = CustomUsbSerialStream::TxState;
+  bool submitted = false;
+  QString input_error;
+  QTimer timer;
+  auto refresh = [&] {
+    controls.refresh(stream, true);
+    TxState state = TxState::Error;
+    QString message;
+    if (!stream) {
+      message = tr("USB stream closed.");
+    } else if (!input_error.isEmpty()) {
+      message = input_error;
+    } else {
+      message = stream->txStatus(&state, submitted);
+      if (message.isEmpty()) message = tr("Ready to send.");
+    }
+    status.show(state, message);
+    brs->setEnabled(fd->isChecked());
+    if (!fd->isChecked()) brs->setChecked(false);
+  };
+  connect(controls.send, &QPushButton::clicked, &dialog, [&] {
+    if (!stream) return;
     QString hex = data->text();
     hex.remove(QRegularExpression(QStringLiteral("\\s")));
     const QRegularExpression payload_pattern(QStringLiteral("\\A(?:[0-9a-fA-F]{2}){0,64}\\z"));
@@ -272,21 +337,17 @@ void CustomUsbSerialWidget::showSendFrameDialog(QWidget* parent, CustomUsbSerial
     const uint32_t id = address->text().toUInt(&address_ok, 16);
     const uint8_t flags = (extended->isChecked() ? 1 : 0) | (fd->isChecked() ? 4 : 0) |
                           (brs->isChecked() ? 8 : 0);
-    if (!stream) return;
-    if (!address_ok || !payload_pattern.match(hex).hasMatch() ||
-        !stream->sendFrame(bus->value(), id, flags, QByteArray::fromHex(hex.toLatin1()),
-                           std::nullopt, controls.timing())) {
-      QMessageBox::warning(controls.send, tr("Frame not queued"),
-                           tr("Check the CAN ID, frame format, payload length, and USB transmitter status."));
+    input_error.clear();
+    if (address_ok && payload_pattern.match(hex).hasMatch() &&
+        stream->sendFrame(bus->value(), id, flags, QByteArray::fromHex(hex.toLatin1()),
+                          std::nullopt, controls.timing())) {
+      submitted = true;
+    } else {
+      submitted = false;
+      input_error = tr("Frame not queued. Check the CAN ID, format, payload length, and USB transmitter status.");
     }
+    refresh();
   });
-  QTimer timer;
-  auto refresh = [&] {
-    controls.refresh(stream, true);
-    status->setText(stream ? stream->txStatus() : tr("USB stream closed."));
-    brs->setEnabled(fd->isChecked());
-    if (!fd->isChecked()) brs->setChecked(false);
-  };
   connect(&timer, &QTimer::timeout, &dialog, refresh);
   connect(fd, &QCheckBox::toggled, &dialog, refresh);
   timer.start(100);
@@ -303,26 +364,11 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   auto* value = new QLineEdit(&dialog);
   auto* choices = new QComboBox(&dialog);
   choices->setPlaceholderText(tr("Choose a value"));
-  auto* status_area = new QWidget(&dialog);
-  auto* status_layout = new QHBoxLayout(status_area);
-  status_layout->setContentsMargins(0, 0, 0, 0);
-  auto* indicator = new QLabel(QStringLiteral("●"), status_area);
-  indicator->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
-  indicator->setFixedWidth(indicator->fontMetrics().horizontalAdvance(QStringLiteral("●")) + 4);
-  auto* status = new QLabel(status_area);
-  status->setTextFormat(Qt::PlainText);
-  status->setAlignment(Qt::AlignLeft | Qt::AlignTop);
-  status->setWordWrap(true);
-  status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-  status->setMinimumWidth(320);
-  status->setFixedHeight(3 * status->fontMetrics().lineSpacing());
-  status_layout->addWidget(indicator);
-  status_layout->addWidget(status, 1);
   form->addRow(tr("Signal"), new QLabel(signal_name + QStringLiteral(" · ") + id.toString(), &dialog));
   form->addRow(tr("New value"), value);
   form->addRow(tr("New value"), choices);
   const SendControls controls(dialog, *form, usb_stream, true);
-  form->addRow(status_area);
+  SendStatus status(dialog, *form);
   form->setSizeConstraint(QLayout::SetFixedSize);
 
   auto getSignal = [&]() -> const dbc::Signal* {
@@ -351,7 +397,6 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   using TxState = CustomUsbSerialStream::TxState;
   QString input_error;
   bool submitted = false;
-  std::optional<TxState> displayed_state;
   auto refresh = [&] {
     const auto* signal = getSignal();
     const bool has_frame = stream && signal && stream->latestDataFrame(id, signal).has_value();
@@ -384,22 +429,7 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
       message = stream->txStatus(&state, submitted);
       if (message.isEmpty()) message = has_value ? tr("Ready to send.") : tr("Choose or enter a value to send.");
     }
-    if (displayed_state == state && status->text() == message) return;
-
-    QColor color = status->palette().color(QPalette::PlaceholderText);
-    switch (state) {
-      case TxState::Ready: color = status->palette().color(QPalette::Highlight); break;
-      case TxState::Waiting: break;
-      case TxState::Queued: break;
-      case TxState::Acknowledged: color = QColor("#2d9d64"); break;
-      case TxState::Error: color = QColor("#d85c5c"); break;
-    }
-    auto palette = indicator->palette();
-    palette.setColor(QPalette::WindowText, color);
-    indicator->setPalette(palette);
-    displayed_state = state;
-    status->setText(message);
-    status->setToolTip(message);
+    status.show(state, message);
   };
 
   connect(controls.send, &QPushButton::clicked, &dialog, [&] {
