@@ -170,7 +170,7 @@ QString CustomUsbSerialStream::txStatus(TxState* state, bool include_result) con
 bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t flags, const QByteArray& data,
                                      std::optional<uint32_t> expected_boot, std::optional<RepeatTiming> repeat,
                                      QByteArray signal_mask, QByteArray selector_mask,
-                                     std::optional<Counter> counter) {
+                                     std::optional<Counter> counter, std::optional<Checksum> checksum) {
   if (data.size() > 64) return false;
   if (repeat && signal_mask.size() != data.size()) return false;
   if (!selector_mask.isEmpty() && (!repeat || selector_mask.size() != data.size())) return false;
@@ -181,7 +181,8 @@ bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t fla
   if (++tx_sequence_ == 0) ++tx_sequence_;
   const uint8_t type = !repeat ? DK_TX_REQUEST : (repeat->automatic ? DK_TX_AUTO : DK_TX_REPEAT);
   uint8_t raw[DK_MAX_RAW] = {DK_VERSION, type, bus,
-                             static_cast<uint8_t>(flags | (counter ? DK_TX_INCREMENT_COUNTER : 0))};
+                             static_cast<uint8_t>(flags | (counter ? DK_TX_INCREMENT_COUNTER : 0) |
+                                                  (checksum ? DK_TX_RECALCULATE_CHECKSUM : 0))};
   dk_put(raw + 4, tx_boot_id_, 4);
   dk_put(raw + 8, tx_sequence_, 4);
   if (repeat) {
@@ -198,8 +199,9 @@ bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t fla
     dk_put(raw + descriptor, counter->start_bit, 2);
     raw[descriptor + 2] = counter->size | (counter->little_endian ? 0x80 : 0);
   }
+  if (checksum) raw[descriptor + (counter ? 3 : 0)] = checksum->byte_index;
   uint8_t wire[DK_MAX_WIRE], decoded[DK_MAX_RAW];
-  size_t size = dk_encode(raw, descriptor + (counter ? 3 : 0), wire);
+  size_t size = dk_encode(raw, descriptor + (counter ? 3 : 0) + (checksum ? 1 : 0), wire);
   if (!size || !dk_decode(wire, size - 1, decoded)) return false;
   tx_request_ = QByteArray(1, '\0') + QByteArray(reinterpret_cast<const char*>(wire), size);
   tx_in_flight_ = tx_sequence_;

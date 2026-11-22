@@ -38,6 +38,9 @@ class CustomUsbSerialStream : public LiveStream {
     uint8_t size;
     bool little_endian;
   };
+  struct Checksum {
+    uint8_t byte_index;
+  };
   bool txReady() const;
   bool repeatSupported() const;
   int fixedRateLimit() const;
@@ -50,7 +53,8 @@ class CustomUsbSerialStream : public LiveStream {
                  std::optional<uint32_t> expected_boot = std::nullopt,
                  std::optional<RepeatTiming> repeat = std::nullopt,
                  QByteArray signal_mask = {}, QByteArray selector_mask = {},
-                 std::optional<Counter> counter = std::nullopt);
+                 std::optional<Counter> counter = std::nullopt,
+                 std::optional<Checksum> checksum = std::nullopt);
   enum class TxState { Ready, Waiting, Queued, Acknowledged, Error };
   QString txStatus(TxState* state = nullptr, bool include_result = true) const;
 
