@@ -70,10 +70,11 @@ def main():
         common_code = lambda data: data[data.index(b'#define DK_VERSION'):]
         assert common_code(firmware_header.read_bytes()) == common_code(
             (root / 'src/core/streams/custom_usb_serial_protocol.h').read_bytes())
+    feedback = os.environ.get('CABANA_TEST_TX_FEEDBACK', 'ack')
     master, slave = pty.openpty()
     with tempfile.TemporaryDirectory(prefix='custom-usb-serial-', dir=root / 'build') as directory:
         process = subprocess.Popen([str(root / 'build/test_custom_usb_serial_stream'), os.ttyname(slave), directory],
-                                   env={**os.environ, 'QT_QPA_PLATFORM': 'offscreen'},
+                                   env={**os.environ, 'QT_QPA_PLATFORM': 'offscreen', 'CABANA_TEST_TX_FEEDBACK': feedback},
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             # QSerialPort configures the PTY to raw mode when open. Wait for
@@ -83,6 +84,25 @@ def main():
                 if process.poll() is not None or time.monotonic() >= deadline:
                     raise AssertionError('Serial reader did not open the PTY')
                 time.sleep(.01)
+            pending = bytearray()
+            start_record = read_record(master, pending)
+            version, kind, bus, flags, boot, sequence, session, opcode = struct.unpack('<BBBBIIQB', start_record)
+            assert (version, kind, bus, flags, boot, sequence, opcode) == (1, 12, 0, 0, 0, 0, 0) and session
+
+            def session_record(opcode, session_id=session, boot_id=0):
+                return struct.pack('<BBBBIIQB', 1, 12, 0, 0, boot_id, 0, session_id, opcode)
+
+            keepalive = session_record(2)
+            saw_keepalive = False
+            def read_tx_record():
+                nonlocal saw_keepalive
+                while (record := read_record(master, pending)) == keepalive:
+                    saw_keepalive = True
+                return record
+
+            stale = frame(0, 99, 10, 0x777, bytes([255]))
+            os.write(master, stale + encode(session_record(1, session ^ 1, 123)) + stale +
+                     encode(session_record(1, boot_id=123)))
             stream = b'boot text\0' + b'\x01' * 200 + b'\0'
             stream += frame(0, 0xfffffffe, 1000, 0x132, b'12345678')
             stream += frame(1, 1, 1100, 0x1abcde, bytes(range(64)), 13)
@@ -104,12 +124,8 @@ def main():
                     time.sleep(.005)
             repeat = os.environ.get('CABANA_TEST_TX_REPEAT')
             automatic = bool(repeat and repeat.startswith('automatic'))
-            feedback = os.environ.get('CABANA_TEST_TX_FEEDBACK')
-            if feedback:
-                tx_result(master, 10, 0, 0, 0)
-            tx_result(master, 8 if automatic else 3, int(bool(repeat) and not automatic), 0, 0)
-            pending = bytearray()
-            request = read_record(master, pending)
+            tx_result(master, 3, 1, 0, 0)
+            request = read_tx_record()
             version, kind, bus, flags, boot, sequence, timestamp, address, length = struct.unpack(
                 '<BBBBIIQIB', request[:25])
             expected_kind = 7 if automatic else (4 if repeat else 2)
@@ -130,18 +146,16 @@ def main():
                                            flags=13, boot=124, kind=11))
                     tx_result(master, 10, 1, sequence, 1)
                 control = lambda opcode: struct.pack('<BBBBIIQB', 1, 5, 1, 0, 124, sequence, 0, opcode)
-                assert read_record(master, pending) == control(0)
+                assert read_tx_record() == control(0)
                 if repeat.endswith('cancel'):
-                    while (record := read_record(master, pending)) == control(0):
+                    while (record := read_tx_record()) == control(0):
                         pass
                     assert record == control(1)
                     tx_result(master, result_kind, 1, sequence, 9)
                 else:
-                    assert read_record(master, pending) == control(0)
+                    assert read_tx_record() == control(0)
                     tx_result(master, result_kind, 1, sequence, 8)
                 assert not pending.strip(b'\0')
-                ready, _, _ = select.select([master], [], [], .45)
-                assert not ready, 'Unexpected USB request after the fixed-rate send stopped'
             else:
                 assert not pending.strip(b'\0'), 'Unexpected second TX request'
                 tx_result(master, 3, 1, sequence, 4 if 'CABANA_TEST_TX_FIFO_FULL' in os.environ else 1)
@@ -156,6 +170,8 @@ def main():
                             os.write(master, frame(1, sequence, 140, 0x22222, request[25:89], flags=13,
                                                    boot=124, kind=11))
                         tx_result(master, 10, 1, sequence, {'ack': 1, 'unknown': 3}[feedback])
+            assert read_tx_record() == session_record(3), 'Expected stop on stream close'
+            assert saw_keepalive, 'Expected session keepalive'
             stdout, stderr = process.communicate(timeout=8)
             print(stdout.decode())
             if process.returncode:

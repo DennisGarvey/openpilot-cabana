@@ -21,6 +21,7 @@
 #include "core/dbc/dbc_manager.h"
 #include "core/streams/custom_usb_serial_protocol.h"
 #include "core/streams/custom_usb_serial_stream.h"
+#include "modules/settings/settings.h"
 
 namespace {
 
@@ -226,8 +227,8 @@ AbstractStream* CustomUsbSerialWidget::open() {
   }
 }
 
-void CustomUsbSerialWidget::showUtilizationDialog(QWidget* parent, CustomUsbSerialStream* usb_stream) {
-  const auto name = QStringLiteral("usb_stream_utilization");
+void CustomUsbSerialWidget::showDeviceMetricsDialog(QWidget* parent, CustomUsbSerialStream* usb_stream) {
+  const auto name = QStringLiteral("usb_serial_device_metrics");
   if (auto* existing = parent->findChild<QDialog*>(name, Qt::FindDirectChildrenOnly)) {
     existing->showNormal();
     existing->raise();
@@ -239,32 +240,50 @@ void CustomUsbSerialWidget::showUtilizationDialog(QWidget* parent, CustomUsbSeri
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   dialog->setObjectName(name);
   connect(usb_stream, &QObject::destroyed, dialog, &QDialog::close);
-  dialog->setWindowTitle(tr("USB Stream Utilization"));
+  dialog->setWindowTitle(tr("USB Serial Device Metrics"));
   auto* form = new QFormLayout(dialog);
-  auto* serial = new QLabel(dialog);
-  auto* cpu0 = new QLabel(dialog);
-  auto* cpu1 = new QLabel(dialog);
-  auto* spi = new QLabel(dialog);
-  auto* can0 = new QLabel(dialog);
-  auto* can1 = new QLabel(dialog);
-  form->addRow(tr("Serial utilization"), serial);
-  form->addRow(tr("CPU utilization (core 0)"), cpu0);
-  form->addRow(tr("CPU utilization (core 1)"), cpu1);
-  form->addRow(tr("SPI utilization (shared)"), spi);
-  form->addRow(tr("CAN bus 0 utilization"), can0);
-  form->addRow(tr("CAN bus 1 utilization"), can1);
-  serial->setToolTip(tr("Read and write throughput relative to the 8 Mbit/s logical serial setting."));
-  spi->setToolTip(tr("Time spent clocking the shared SPI bus."));
-  const QString can_hint = tr("Estimated from frame sizes and bit rates with a bit-stuffing allowance.");
-  can0->setToolTip(can_hint);
-  can1->setToolTip(can_hint);
+  using Metric = CustomUsbSerialStream::StatusMetric;
+  form->addRow(new QLabel(tr("Check a metric to show it in the status bar."), dialog));
+  auto add_metric = [&](Metric metric, const QString& title, const QString& tooltip = {}) {
+    auto* checkbox = new QCheckBox(title, dialog);
+    checkbox->setChecked(settings.usb_status_metrics & metric);
+    checkbox->setToolTip(tooltip);
+    connect(checkbox, &QCheckBox::toggled, dialog, [metric](bool checked) {
+      if (checked) settings.usb_status_metrics |= metric;
+      else settings.usb_status_metrics &= ~metric;
+      emit settings.usbStatusMetricsChanged();
+    });
+    auto* value = new QLabel(dialog);
+    value->setToolTip(tooltip);
+    form->addRow(checkbox, value);
+    return value;
+  };
+  auto* serial = add_metric(Metric::SerialUtil, tr("Serial utilization"),
+                            tr("Throughput relative to the 8 Mbit/s logical serial setting."));
+  auto* cpu0 = add_metric(Metric::Cpu0Util, tr("CPU utilization (core 0)"));
+  auto* cpu1 = add_metric(Metric::Cpu1Util, tr("CPU utilization (core 1)"));
+  auto* spi = add_metric(Metric::SpiUtil, tr("SPI utilization (shared)"),
+                         tr("Time spent clocking the shared SPI bus."));
+  const auto can_hint = tr("Estimated from frame sizes and bit rates with a bit-stuffing allowance.");
+  auto* can0 = add_metric(Metric::Bus0Util, tr("CAN bus 0 utilization"), can_hint);
+  auto* can1 = add_metric(Metric::Bus1Util, tr("CAN bus 1 utilization"), can_hint);
+  auto* gaps = add_metric(Metric::SequenceGaps, tr("USB Frame Sequence Gaps"),
+                          tr("Missing CAN frame sequence numbers in the USB stream across both buses."));
+  auto* drops = add_metric(Metric::QueueDrops, tr("Firmware Capture Queue Drops"),
+                           tr("CAN frames discarded because the DashKit firmware capture queue was full."));
+  auto* fifo_a = add_metric(Metric::FifoA, tr("CAN Controller A FIFO Overflow"),
+                            tr("Bus 0 receive FIFO overflow events. Each event indicates at least one lost frame."));
+  auto* fifo_b = add_metric(Metric::FifoB, tr("CAN Controller B FIFO Overflow"),
+                            tr("Bus 1 receive FIFO overflow events. Each event indicates at least one lost frame."));
+  auto* invalid = add_metric(Metric::InvalidRecords, tr("Invalid USB Records"),
+                              tr("USB records Cabana rejected due to framing, checksum, or format errors."));
   auto* status = new QLabel(dialog);
   form->addRow(status);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
   connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
   form->addRow(buttons);
 
-  auto refresh = [stream, serial, cpu0, cpu1, spi, can0, can1, status] {
+  auto refresh = [stream, serial, cpu0, cpu1, spi, can0, can1, gaps, drops, fifo_a, fifo_b, invalid, status] {
     const auto values = stream ? stream->utilization() : std::nullopt;
     auto format = [&](uint16_t value) {
       return values ? tr("%L1%").arg(value / 10.0, 0, 'f', 1) : QStringLiteral("—");
@@ -276,6 +295,14 @@ void CustomUsbSerialWidget::showUtilizationDialog(QWidget* parent, CustomUsbSeri
     spi->setText(format(sample.spi));
     can0->setText(format(sample.can[0]));
     can1->setText(format(sample.can[1]));
+    if (stream) {
+      const auto counters = stream->captureCounters();
+      gaps->setText(tr("%L1").arg(counters.missing_frames));
+      drops->setText(tr("%L1").arg(counters.queue_drops));
+      fifo_a->setText(tr("%L1").arg(counters.fifo_overflow_events[0]));
+      fifo_b->setText(tr("%L1").arg(counters.fifo_overflow_events[1]));
+      invalid->setText(tr("%L1").arg(counters.invalid_records));
+    }
     status->setText(!stream ? tr("Stream closed.") : values ? QString() : tr("Waiting for utilization data from the adapter."));
   };
   auto* timer = new QTimer(dialog);

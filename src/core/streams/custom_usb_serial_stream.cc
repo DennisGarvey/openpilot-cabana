@@ -24,19 +24,40 @@ void CustomUsbSerialStream::setError(const QString& error) {
   clearRepeat();
 }
 
-QString CustomUsbSerialStream::captureStatus() const {
+QString CustomUsbSerialStream::captureStatus(int metrics) const {
   std::lock_guard lock(stats_mutex_);
   if (!error_.isEmpty()) return QStringLiteral("Custom USB Serial: %1").arg(error_);
-  if (!last_record_ms_) return QStringLiteral("Custom USB Serial: waiting for USB streaming firmware");
+  if (!last_record_ms_) return tr("Custom USB Serial: waiting for capture session reply");
   if (QDateTime::currentMSecsSinceEpoch() - last_record_ms_ > 3000)
     return QStringLiteral("Custom USB Serial: no USB data for 3 seconds");
-  return QStringLiteral("USB 0:%1 1:%2 | gaps:%3 Q:%4 FIFO:%5 bad:%6")
-      .arg(frames_[0])
-      .arg(frames_[1])
-      .arg(gaps_[0] + gaps_[1])
-      .arg(uint64_t(queue_drops_[0]) + queue_drops_[1])
-      .arg(uint64_t(overflows_[0]) + overflows_[1])
-      .arg(corrupt_);
+  const auto frame_counts = QStringLiteral("USB 0:%1 1:%2").arg(frames_[0]).arg(frames_[1]);
+  QStringList parts;
+  auto count = [&](StatusMetric flag, const QString& label, uint64_t value) {
+    if (metrics & flag) parts += QStringLiteral("%1:%2").arg(label).arg(value);
+  };
+  auto utilization = [&](StatusMetric flag, const QString& label, uint16_t value) {
+    if (!(metrics & flag)) return;
+    const QString percent = utilization_expiry_.hasExpired() ? QStringLiteral("—") :
+        QStringLiteral("%1%").arg(value / 10.0, 0, 'f', 1);
+    parts += QStringLiteral("%1:%2").arg(label, percent);
+  };
+  utilization(SerialUtil, tr("Serial"), utilization_.serial);
+  utilization(Cpu0Util, tr("CPU0"), utilization_.cpu[0]);
+  utilization(Cpu1Util, tr("CPU1"), utilization_.cpu[1]);
+  utilization(SpiUtil, tr("SPI"), utilization_.spi);
+  utilization(Bus0Util, tr("CAN0"), utilization_.can[0]);
+  utilization(Bus1Util, tr("CAN1"), utilization_.can[1]);
+  count(SequenceGaps, tr("USB seq gaps"), gaps_[0] + gaps_[1]);
+  count(QueueDrops, tr("Capture drops"), queue_drops_[0] + queue_drops_[1]);
+  count(FifoA, tr("FIFO A"), overflows_[0]);
+  count(FifoB, tr("FIFO B"), overflows_[1]);
+  count(InvalidRecords, tr("Invalid USB"), corrupt_);
+  return parts.isEmpty() ? frame_counts : frame_counts + QStringLiteral(" | ") + parts.join(QStringLiteral("  "));
+}
+
+CustomUsbSerialStream::CaptureCounters CustomUsbSerialStream::captureCounters() const {
+  std::lock_guard lock(stats_mutex_);
+  return {gaps_[0] + gaps_[1], queue_drops_[0] + queue_drops_[1], {overflows_[0], overflows_[1]}, corrupt_};
 }
 
 QString CustomUsbSerialStream::captureDetails() const {
@@ -234,6 +255,24 @@ void CustomUsbSerialStream::streamThread() {
     std::lock_guard lock(stats_mutex_);
     tx_sequence_ = QRandomGenerator::global()->generate();
   }
+  auto newSessionId = [] {
+    uint64_t id;
+    do {
+      id = QRandomGenerator::global()->generate64();
+    } while (!id);
+    return id;
+  };
+  uint64_t session_id = newSessionId();
+  bool session_ready = false;
+  QDeadlineTimer session_control_due(0), session_activity(0);
+  auto sessionControl = [&](uint8_t opcode) {
+    uint8_t raw[DK_MAX_RAW] = {DK_VERSION, DK_SESSION};
+    dk_put(raw + 12, session_id, 8);
+    raw[20] = opcode;
+    uint8_t wire[DK_MAX_WIRE];
+    const size_t size = dk_encode(raw, 21, wire);
+    return QByteArray(1, '\0') + QByteArray(reinterpret_cast<const char*>(wire), size);
+  };
   QByteArray pending;
   bool discarding = false, have_boot = false;
   uint32_t boot_id = 0, last_sequence[2] = {};
@@ -241,8 +280,26 @@ void CustomUsbSerialStream::streamThread() {
   uint64_t last_ns = 0, time_offset = 0;
   uint64_t queue_base[2] = {}, overflow_base[2] = {}, usb_base = 0;
   while (!QThread::currentThread()->isInterruptionRequested()) {
+    if (session_ready && session_activity.hasExpired()) {
+      session_ready = false;
+      session_id = newSessionId();
+      session_control_due = QDeadlineTimer(0);
+      std::lock_guard lock(stats_mutex_);
+      tx_capability_ = QDeadlineTimer(0);
+      utilization_expiry_ = QDeadlineTimer(0);
+      recent_data_frames_.clear();
+      clearRepeat();
+      tx_request_.clear();
+      tx_in_flight_ = 0;
+      tx_state_ = TxState::Waiting;
+      tx_status_.clear();
+    }
     QByteArray request;
-    {
+    if (session_control_due.hasExpired()) {
+      request = sessionControl(session_ready ? DK_SESSION_KEEPALIVE : DK_SESSION_START);
+      session_control_due = QDeadlineTimer(session_ready ? 1000 : 500);
+    }
+    if (session_ready && request.isEmpty()) {
       std::lock_guard lock(stats_mutex_);
       if (repeat_active_) {
         if (repeat_deadline_.hasExpired() || tx_capability_.hasExpired()) {
@@ -303,6 +360,18 @@ void CustomUsbSerialStream::streamThread() {
       bool nonempty = discarding || !pending.isEmpty();
       pending.clear();
       discarding = false;
+      if (n && raw[1] == DK_SESSION) {
+        if (!session_ready && raw[20] == DK_SESSION_READY && dk_get(raw + 12, 8) == session_id) {
+          session_ready = true;
+          session_activity = QDeadlineTimer(2500);
+          session_control_due = QDeadlineTimer(1000);
+          have_sequence[0] = have_sequence[1] = false;
+          std::lock_guard lock(stats_mutex_);
+          last_record_ms_ = QDateTime::currentMSecsSinceEpoch();
+        }
+        continue;
+      }
+      if (!session_ready) continue;
       if (!n) {
         if (nonempty) {
           std::lock_guard lock(stats_mutex_);
@@ -310,6 +379,7 @@ void CustomUsbSerialStream::streamThread() {
         }
         continue;
       }
+      session_activity = QDeadlineTimer(2500);
       const uint8_t bus = raw[2];
       const bool tx_frame = raw[1] == DK_TX_FRAME;
       const uint32_t boot = dk_get(raw + 4, 4), sequence = dk_get(raw + 8, 4);
@@ -503,5 +573,9 @@ void CustomUsbSerialStream::streamThread() {
       can[0].setDat(kj::arrayPtr(raw + 25, (raw[3] & 2) ? 0 : raw[24]));
       handleEvent(capnp::messageToFlatArray(message));
     }
+  }
+  if (QThread::currentThread()->isInterruptionRequested() && serial.isOpen()) {
+    const auto stop = sessionControl(DK_SESSION_STOP);
+    if (serial.write(stop) == stop.size()) serial.waitForBytesWritten(50);
   }
 }

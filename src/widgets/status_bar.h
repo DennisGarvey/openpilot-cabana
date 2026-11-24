@@ -17,6 +17,7 @@ class StatusBar : public QStatusBar {
   void monitorLiveStream();
 
  private:
+  void updateUsbMetrics();
   QProgressBar* progress_bar_;
   QLabel* status_label_;
   QLabel* cpu_label_;

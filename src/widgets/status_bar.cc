@@ -62,6 +62,7 @@ StatusBar::StatusBar(QWidget* parent) : QStatusBar(parent) {
 
   connect(&StreamManager::instance(), &StreamManager::streamChanged, this, &StatusBar::monitorLiveStream);
 
+  connect(&settings, &Settings::usbStatusMetricsChanged, this, &StatusBar::updateUsbMetrics);
   timer_ = new QTimer(this);
   connect(timer_, &QTimer::timeout, this, &StatusBar::updateMetrics);
   timer_->start(2000);
@@ -103,6 +104,13 @@ void StatusBar::monitorLiveStream() {
   }
 }
 
+void StatusBar::updateUsbMetrics() {
+  if (auto* stream = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
+    live_stats_label_->setText(stream->captureStatus(settings.usb_status_metrics));
+    live_stats_label_->setToolTip(stream->captureDetails());
+  }
+}
+
 void StatusBar::updateMetrics() {
   double cpu_percent = 0.0;
   double mem_mb = 0.0;
@@ -128,9 +136,8 @@ void StatusBar::updateMetrics() {
                             .arg(total_event_count, 6)
                             .arg(QString::fromStdString(formattedDataSize(total_data_size)));
     live_stats_label_->setText(stats_text);
-  } else if (auto* serial_stream = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
-    live_stats_label_->setText(serial_stream->captureStatus());
-    live_stats_label_->setToolTip(serial_stream->captureDetails());
+  } else if (dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
+    updateUsbMetrics();
   } else {
     live_stats_label_->setText("");
     live_stats_label_->setToolTip("");

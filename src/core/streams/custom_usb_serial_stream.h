@@ -12,8 +12,20 @@ class CustomUsbSerialStream : public LiveStream {
   CustomUsbSerialStream(QObject* parent, const QString& port, qint32 baud_rate = 8000000);
   ~CustomUsbSerialStream() override { stop(); }
   QString routeName() const override { return QStringLiteral("Custom USB Serial: %1").arg(port_); }
-  QString captureStatus() const;
+  enum StatusMetric {
+    SerialUtil = 1 << 0, Cpu0Util = 1 << 1, Cpu1Util = 1 << 2, SpiUtil = 1 << 3,
+    Bus0Util = 1 << 4, Bus1Util = 1 << 5, SequenceGaps = 1 << 6, QueueDrops = 1 << 7,
+    FifoA = 1 << 8, FifoB = 1 << 9, InvalidRecords = 1 << 10,
+  };
+  QString captureStatus(int metrics = 0) const;
   QString captureDetails() const;
+  struct CaptureCounters {
+    uint64_t missing_frames;
+    uint64_t queue_drops;
+    uint64_t fifo_overflow_events[2];
+    uint64_t invalid_records;
+  };
+  CaptureCounters captureCounters() const;
   struct Utilization {
     uint16_t serial;
     uint16_t cpu[2];

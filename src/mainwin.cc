@@ -189,16 +189,16 @@ void MainWindow::createToolsMenu() {
   tools_menu_ = menuBar()->addMenu(tr("&Tools"));
   tools_menu_->addAction(tr("Find &Similar Bits"), this, &MainWindow::findSimilarBits);
   tools_menu_->addAction(tr("&Find Signal"), this, &MainWindow::findSignal);
-  auto* utilization_action = tools_menu_->addAction(tr("USB Stream Utilization…"));
+  auto* device_metrics_action = tools_menu_->addAction(tr("USB Serial Device Metrics…"));
   auto* tx_action = tools_menu_->addAction(tr("Send Frame…"));
-  connect(tools_menu_, &QMenu::aboutToShow, this, [tx_action, utilization_action] {
+  connect(tools_menu_, &QMenu::aboutToShow, this, [tx_action, device_metrics_action] {
     const bool custom_usb = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream()) != nullptr;
-    utilization_action->setVisible(custom_usb);
+    device_metrics_action->setVisible(custom_usb);
     tx_action->setVisible(custom_usb);
   });
-  connect(utilization_action, &QAction::triggered, this, [this] {
+  connect(device_metrics_action, &QAction::triggered, this, [this] {
     if (auto* stream = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
-      CustomUsbSerialWidget::showUtilizationDialog(this, stream);
+      CustomUsbSerialWidget::showDeviceMetricsDialog(this, stream);
     }
   });
   connect(tx_action, &QAction::triggered, this, [this] {

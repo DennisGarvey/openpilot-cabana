@@ -15,6 +15,8 @@
  * SPI, and CAN buses 0/1, each as u16 per mille over the last sample interval.
  * TX feedback uses the TX result layout. A zero sequence announces support;
  * a nonzero sequence reports the outcome of one individual transmit attempt.
+ * Session control uses a nonzero u64 session ID in the time field and
+ * one opcode at offset 20. Bus, flags and sequence are zero.
  * An acknowledged TX frame uses the Frame layout and the TX request sequence.
  * Failure feedback may append FIFO status, bus diagnostics and error counters
  * as three u32 controller register snapshots.
@@ -52,6 +54,11 @@
 #define DK_UTILIZATION_SIZE 32
 #define DK_TX_FEEDBACK 10
 #define DK_TX_FRAME 11
+#define DK_SESSION 12
+#define DK_SESSION_START 0
+#define DK_SESSION_READY 1
+#define DK_SESSION_KEEPALIVE 2
+#define DK_SESSION_STOP 3
 #define DK_TX_INCREMENT_COUNTER 16
 #define DK_TX_RECALCULATE_CHECKSUM 32
 #define DK_TX_ACKNOWLEDGED 1
@@ -212,6 +219,9 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
     }
     if (out < 22 || raw[0] != DK_VERSION || raw[2] > 1 ||
         dk_get(raw + out - 2, 2) != dk_crc(raw, out - 2)) return 0;
+    if (raw[1] == DK_SESSION)
+        return out == 23 && !raw[2] && !raw[3] && !dk_get(raw + 8, 4) &&
+            dk_get(raw + 12, 8) && raw[20] <= DK_SESSION_STOP ? out : 0;
     if (raw[1] == DK_STATUS)
         return out == DK_STATUS_SIZE + 2 && raw[3] == 0 ? out : 0;
     if (raw[1] == DK_UTILIZATION) {

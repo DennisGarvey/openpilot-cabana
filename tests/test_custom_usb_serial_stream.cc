@@ -1,10 +1,12 @@
 #include <QApplication>
+#include <QCheckBox>
 #include <QDir>
 #include <QDialog>
 #include <QLabel>
 #include <QTimer>
 #include <QtCharts/QLegendMarker>
 #include <iostream>
+#include <utility>
 
 #include "core/streams/custom_usb_serial_stream.h"
 #include "modules/charts/charts_panel.h"
@@ -57,7 +59,7 @@ int main(int argc, char** argv) {
   QObject::connect(&send_timer, &QTimer::timeout, &app, [&] {
     if (!stream.txReady()) return;
     send_timer.stop();
-    if ((automatic ? stream.automaticSupported() : stream.repeatSupported()) != repeat) {
+    if (!stream.automaticSupported() || !stream.repeatSupported()) {
       app.exit(13);
       return;
     }
@@ -231,8 +233,10 @@ int main(int argc, char** argv) {
     }
     const auto status = stream.captureStatus();
     const auto details = stream.captureDetails();
-    if (!status.contains("gaps:1") || !status.contains("bad:2") || !status.contains("Q:1") ||
-        !status.contains("FIFO:2") || !details.contains("device restarts: 1")) {
+    const auto counters = stream.captureCounters();
+    if (status != "USB 0:5 1:3" || counters.queue_drops != 1 || counters.missing_frames != 1 || counters.fifo_overflow_events[0] != 2 ||
+        counters.fifo_overflow_events[1] != 0 ||
+        counters.invalid_records != 2 || !details.contains("device restarts: 1")) {
       app.exit(5);
       return;
     }
@@ -243,19 +247,32 @@ int main(int argc, char** argv) {
       app.exit(14);
       return;
     }
+    const int previous_metrics = std::exchange(settings.usb_status_metrics, 0);
     QWidget owner;
-    CustomUsbSerialWidget::showUtilizationDialog(&owner, &stream);
-    CustomUsbSerialWidget::showUtilizationDialog(&owner, &stream);
+    CustomUsbSerialWidget::showDeviceMetricsDialog(&owner, &stream);
+    CustomUsbSerialWidget::showDeviceMetricsDialog(&owner, &stream);
     const auto dialogs = owner.findChildren<QDialog*>(Qt::FindDirectChildrenOnly);
     if (dialogs.size() != 1 || !dialogs.front()->isVisible() || dialogs.front()->isModal() ||
         dialogs.front()->windowType() != Qt::Window ||
         dialogs.front()->windowFlags().testFlag(Qt::WindowStaysOnTopHint)) {
+      settings.usb_status_metrics = previous_metrics;
       app.exit(15);
       return;
     }
     QStringList labels;
     for (auto* label : dialogs.front()->findChildren<QLabel*>()) labels.append(label->text());
-    if (!labels.contains("SPI utilization (shared)") || !labels.contains("45.6%") ||
+    for (auto* checkbox : dialogs.front()->findChildren<QCheckBox*>()) {
+      labels.append(checkbox->text());
+      if (checkbox->text() == "Firmware Capture Queue Drops" || checkbox->text() == "Invalid USB Records")
+        checkbox->setChecked(true);
+    }
+    const auto selected_status = stream.captureStatus(settings.usb_status_metrics);
+    settings.usb_status_metrics = previous_metrics;
+    if (dialogs.front()->windowTitle() != "USB Serial Device Metrics" ||
+        !selected_status.endsWith(" | Capture drops:1  Invalid USB:2") ||
+        !labels.contains("USB Frame Sequence Gaps") || !labels.contains("CAN Controller A FIFO Overflow") ||
+        !labels.contains("CAN Controller B FIFO Overflow") ||
+        !labels.contains("Invalid USB Records") || !labels.contains("SPI utilization (shared)") || !labels.contains("45.6%") ||
         !labels.contains("CAN bus 1 utilization") || !labels.contains("67.8%")) {
       app.exit(16);
       return;

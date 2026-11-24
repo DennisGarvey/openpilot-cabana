@@ -44,6 +44,7 @@ class Settings : public QObject {
 
   // Last opened stream options and parameters
   int last_stream_option = 0;
+  int usb_status_metrics = 0;
   QString last_route;
   QStringList last_asc_files;
   QStringList last_candump_files;
@@ -67,6 +68,7 @@ class Settings : public QObject {
 
  signals:
   void changed();
+  void usbStatusMetricsChanged();
 };
 
 extern Settings settings;
