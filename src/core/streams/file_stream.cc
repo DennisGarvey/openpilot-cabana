@@ -3,6 +3,7 @@
 #include <QThread>
 #include <QTimer>
 #include <algorithm>
+#include <cmath>
 
 #include "common/timing.h"
 #include "modules/settings/settings.h"
@@ -77,7 +78,11 @@ void FileStream::start() {
 }
 
 void FileStream::seekTo(double sec) {
-  seek_to_.store(std::clamp(sec, 0.0, duration_s_));
+  sec = std::clamp(sec, 0.0, duration_s_);
+  {
+    std::lock_guard lk(pause_mutex_);
+    seek_to_.store(sec);
+  }
   pause_cv_.notify_all();
   emit seeking(sec);
 }
@@ -100,23 +105,26 @@ void FileStream::playbackThread() {
   size_t idx = 0;
   uint64_t anchor_wall_ns = nanos_since_boot();  // wall-clock at last anchor
   uint64_t anchor_file_ns = 0;                    // file-time progress (ns from begin_mono_ns_) at last anchor
+  uint64_t position_ns = 0;
+  const uint64_t duration_ns = all_events_.back()->mono_ns - begin_mono_ns_;
   float prev_speed = 1.0f;
 
   // Re-anchor wall clock and file-time base at the current playback position.
   // Must be called after any discontinuity: seek, pause/unpause, speed change.
   auto reanchor = [&]() {
     anchor_wall_ns = nanos_since_boot();
-    anchor_file_ns = (idx < all_events_.size()) ? (all_events_[idx]->mono_ns - begin_mono_ns_) : anchor_file_ns;
+    anchor_file_ns = position_ns;
   };
 
   auto applySeek = [&](double sec) {
-    uint64_t target_ns = begin_mono_ns_ + static_cast<uint64_t>(sec * 1e9);
-    auto it = std::lower_bound(all_events_.begin(), all_events_.end(), target_ns,
-                               [](const CanEvent* e, uint64_t t) { return e->mono_ns < t; });
+    position_ns = std::min(duration_ns, static_cast<uint64_t>(std::llround(sec * 1e9)));
+    const uint64_t target_ns = toMonoNs(sec);
+    // The seek snapshot already includes events at the requested time.
+    auto it = std::ranges::upper_bound(all_events_, target_ns, {}, &CanEvent::mono_ns);
     idx = std::distance(all_events_.begin(), it);
-    reanchor();
     emit seekedTo(sec);
     waitForSeekFinished();
+    reanchor();
   };
 
   applySeek(0.0);
@@ -153,10 +161,13 @@ void FileStream::playbackThread() {
     }
 
     // How far into the file we should be (in ns from begin_mono_ns_)
-    const uint64_t file_time_ns = anchor_file_ns + static_cast<uint64_t>((nanos_since_boot() - anchor_wall_ns) * spd);
+    const uint64_t file_time_ns = std::min(duration_ns, anchor_file_ns +
+        static_cast<uint64_t>((nanos_since_boot() - anchor_wall_ns) * spd));
+    position_ns = file_time_ns;
     const uint64_t event_file_ns = all_events_[idx]->mono_ns - begin_mono_ns_;
 
     if (event_file_ns > file_time_ns) {
+      setPlaybackTime(position_ns / 1e9);
       uint64_t wait_ns = std::min<uint64_t>(static_cast<uint64_t>((event_file_ns - file_time_ns) / spd), 50'000'000ULL);
       QThread::usleep(wait_ns / 1000);
       continue;
@@ -167,5 +178,6 @@ void FileStream::playbackThread() {
       const CanEvent* e = all_events_[idx++];
       processNewMessage({e->src, e->address}, e->mono_ns, e->dat, e->size);
     }
+    setPlaybackTime(position_ns / 1e9);
   }
 }

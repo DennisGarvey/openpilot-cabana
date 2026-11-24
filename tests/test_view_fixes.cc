@@ -1,6 +1,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QFile>
+#include <QEventLoop>
 #include <QMessageBox>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -13,6 +14,7 @@
 #include <iostream>
 
 #include "core/commands/commands.h"
+#include "core/streams/asc_log_stream.h"
 #include "core/streams/live_stream.h"
 #include "modules/dbc/dbc_controller.h"
 #include "modules/inspector/signal_editor/signal_editor.h"
@@ -57,9 +59,43 @@ class TestStream : public LiveStream {
   bool& stopped_;
 };
 
+static bool seekThroughAscGap(QApplication& app, const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly)) return false;
+  file.write("24.330000 1 02A Rx d 1 01\n531.501000 1 02A Rx d 1 02\n");
+  file.close();
+
+  AscLogStream stream(&app, {path});
+  QEventLoop loop;
+  bool passed = false;
+  stream.pause(true);
+  QObject::connect(&stream, &AbstractStream::seekedTo, &loop, [&](double sec) {
+    if (sec == 0) {
+      stream.seekTo(100);
+    } else if (sec == 100) {
+      QTimer::singleShot(100, &loop, [&] {
+        if (stream.currentSec() != 100) {
+          loop.quit();
+          return;
+        }
+        stream.pause(false);
+        QTimer::singleShot(200, &loop, [&] {
+          passed = stream.currentSec() > 100 && stream.currentSec() < 101;
+          loop.quit();
+        });
+      });
+    }
+  });
+  QTimer::singleShot(2000, &loop, &QEventLoop::quit);
+  stream.start();
+  loop.exec();
+  return passed;
+}
+
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
   QTemporaryDir temp(QDir::currentPath() + "/build/view-fixes-XXXXXX");
+  if (!seekThroughAscGap(app, temp.filePath("gap.asc"))) return 24;
   const QString file = temp.filePath("mux.dbc");
   const QByteArray dbc =
       "VERSION \"\"\nNS_ :\nBS_:\nBU_: NODE\nBO_ 42 Test: 2 NODE\n SG_ Page M : 0|8@1+ (1,0) [0|255] \"\" NODE\n SG_ "

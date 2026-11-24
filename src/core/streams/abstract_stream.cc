@@ -36,8 +36,9 @@ void AbstractStream::commitSnapshots() {
 
   {
     std::lock_guard lk(mutex_);
+    const bool time_changed = current_sec_ != shared_state_.current_sec;
     current_sec_ = shared_state_.current_sec;
-    if (shared_state_.dirty_ids.empty()) return;
+    if (shared_state_.dirty_ids.empty() && !time_changed) return;
 
     for (const auto& id : shared_state_.dirty_ids) {
       auto& state = shared_state_.master_state[id];
@@ -77,6 +78,11 @@ void AbstractStream::setTimeRange(const std::optional<std::pair<double, double>>
   emit timeRangeChanged(time_range_);
 }
 
+void AbstractStream::setPlaybackTime(double sec) {
+  std::lock_guard lk(mutex_);
+  shared_state_.current_sec = sec;
+}
+
 void AbstractStream::processNewMessage(const MessageId& id, uint64_t mono_ns, const uint8_t* data, uint8_t size) {
   std::lock_guard lk(mutex_);
   const double sec = toSeconds(mono_ns);
@@ -111,7 +117,7 @@ const MessageSnapshot* AbstractStream::snapshot(const MessageId& id) const {
 void AbstractStream::updateSnapshotsTo(double sec) {
   std::unique_lock lk(mutex_);
 
-  current_sec_ = sec;
+  current_sec_ = shared_state_.current_sec = sec;
   const uint64_t target_ns = toMonoNs(sec);
 
   SourceSet active_sources;

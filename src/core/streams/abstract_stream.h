@@ -90,6 +90,7 @@ class AbstractStream : public QObject {
  protected:
   SourceSet sources_;
   void commitSnapshots();
+  void setPlaybackTime(double sec);
   void mergeEvents(const std::vector<const CanEvent*>& events);
   const CanEvent* newEvent(uint64_t mono_ns, const cereal::CanData::Reader& c) {
     auto dat = c.getDat();
