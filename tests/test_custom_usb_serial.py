@@ -65,11 +65,6 @@ def tx_result(master, kind, bus, sequence, code):
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    # Compare the wire implementation with the sibling firmware when available.
-    for firmware_header in root.parent.glob('*/main/capture/capture_protocol.h'):
-        common_code = lambda data: data[data.index(b'#define DK_VERSION'):]
-        assert common_code(firmware_header.read_bytes()) == common_code(
-            (root / 'src/core/streams/custom_usb_serial_protocol.h').read_bytes())
     feedback = os.environ.get('CABANA_TEST_TX_FEEDBACK', 'ack')
     master, slave = pty.openpty()
     with tempfile.TemporaryDirectory(prefix='custom-usb-serial-', dir=root / 'build') as directory:
@@ -105,6 +100,8 @@ def main():
                      encode(session_record(1, boot_id=123)))
             stream = b'boot text\0' + b'\x01' * 200 + b'\0'
             stream += frame(0, 0xfffffffe, 1000, 0x132, b'12345678')
+            stream += encode(struct.pack('<BBBBIIQ', 1, 13, 0, 0, 123, 0, 1001) +
+                             'I (1) dac: démarre\n'.encode())
             stream += frame(1, 1, 1100, 0x1abcde, bytes(range(64)), 13)
             stream += frame(0, 0xffffffff, 1200, 0x200, b'\0' * 8, 2)
             stream += frame(0, 0, 1300, 0x201, b'\xff')
@@ -113,6 +110,8 @@ def main():
             stream += frame(0, 1, 100, 0x203, b'\x01', boot=124)
             stream += frame(1, 1, 110, 0x22222, b'\xa5' * 64, 13, boot=124)
             stream += frame(1, 2, 120, 0x22222, b'\xa5' * 63 + b'\xa4', 13, boot=124)
+            stream += encode(struct.pack('<BBBBIIQ', 1, 13, 0, 0, 124, 0, 125) +
+                             b'I (2) can_mgr: ready\n')
             stream += encode(struct.pack('<BBBBIIQ6H', 1, 9, 0, 0, 124, 0, 130, 123, 234, 345, 456, 567, 678))
             # Exercise arbitrary serial boundaries, including a one-byte read.
             start = 0

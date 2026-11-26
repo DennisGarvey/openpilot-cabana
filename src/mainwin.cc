@@ -190,15 +190,22 @@ void MainWindow::createToolsMenu() {
   tools_menu_->addAction(tr("Find &Similar Bits"), this, &MainWindow::findSimilarBits);
   tools_menu_->addAction(tr("&Find Signal"), this, &MainWindow::findSignal);
   auto* device_metrics_action = tools_menu_->addAction(tr("USB Serial Device Metrics…"));
+  auto* firmware_log_action = tools_menu_->addAction(tr("Firmware Log…"));
   auto* tx_action = tools_menu_->addAction(tr("Send Frame…"));
-  connect(tools_menu_, &QMenu::aboutToShow, this, [tx_action, device_metrics_action] {
+  connect(tools_menu_, &QMenu::aboutToShow, this, [tx_action, device_metrics_action, firmware_log_action] {
     const bool custom_usb = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream()) != nullptr;
     device_metrics_action->setVisible(custom_usb);
     tx_action->setVisible(custom_usb);
+    firmware_log_action->setVisible(custom_usb);
   });
   connect(device_metrics_action, &QAction::triggered, this, [this] {
     if (auto* stream = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
       CustomUsbSerialWidget::showDeviceMetricsDialog(this, stream);
+    }
+  });
+  connect(firmware_log_action, &QAction::triggered, this, [this] {
+    if (auto* stream = dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
+      CustomUsbSerialWidget::showFirmwareLogDialog(this, stream);
     }
   });
   connect(tx_action, &QAction::triggered, this, [this] {

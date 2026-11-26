@@ -6,12 +6,15 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QFontDatabase>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSerialPortInfo>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -225,6 +228,48 @@ AbstractStream* CustomUsbSerialWidget::open() {
     QMessageBox::warning(this, tr("Custom USB Serial"), QString::fromUtf8(e.what()));
     return nullptr;
   }
+}
+
+void CustomUsbSerialWidget::showFirmwareLogDialog(QWidget* parent, CustomUsbSerialStream* usb_stream) {
+  const auto name = QStringLiteral("usb_serial_firmware_log");
+  if (auto* existing = parent->findChild<QDialog*>(name, Qt::FindDirectChildrenOnly)) {
+    existing->showNormal();
+    existing->raise();
+    existing->activateWindow();
+    return;
+  }
+
+  auto* dialog = new QDialog(parent, Qt::Window);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  dialog->setObjectName(name);
+  dialog->setWindowTitle(tr("Firmware Log"));
+  dialog->resize(780, 440);
+  connect(usb_stream, &QObject::destroyed, dialog, &QDialog::close);
+
+  auto* layout = new QVBoxLayout(dialog);
+  auto* status = new QLabel(tr("Waiting for firmware logs…"), dialog);
+  auto* output = new QPlainTextEdit(dialog);
+  output->setReadOnly(true);
+  output->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+  output->setMaximumBlockCount(2000);
+  layout->addWidget(status);
+  layout->addWidget(output);
+
+  auto* timer = new QTimer(dialog);
+  connect(timer, &QTimer::timeout, dialog, [stream = QPointer(usb_stream), status, output, cursor = uint64_t{0}]() mutable {
+    if (!stream) return;
+    const QString text = stream->firmwareLogSince(cursor);
+    if (text.isEmpty()) return;
+    status->hide();
+    auto* scrollbar = output->verticalScrollBar();
+    const bool at_end = scrollbar->value() == scrollbar->maximum();
+    QTextCursor end(output->document());
+    end.movePosition(QTextCursor::End);
+    end.insertText(text);
+    if (at_end) scrollbar->setValue(scrollbar->maximum());
+  });
+  timer->start(100);
+  dialog->show();
 }
 
 void CustomUsbSerialWidget::showDeviceMetricsDialog(QWidget* parent, CustomUsbSerialStream* usb_stream) {

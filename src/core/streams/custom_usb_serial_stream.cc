@@ -243,6 +243,18 @@ bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t fla
   return true;
 }
 
+QString CustomUsbSerialStream::firmwareLogSince(uint64_t& cursor) const {
+  std::lock_guard lock(stats_mutex_);
+  const uint64_t first = firmware_log_count_ - firmware_log_.size();
+  QString text;
+  if (cursor < first && cursor != 0) text = tr("[Older firmware logs were discarded.]\n");
+  for (uint64_t index = std::max(cursor, first); index < firmware_log_count_; ++index) {
+    text += firmware_log_[index - first];
+  }
+  cursor = firmware_log_count_;
+  return text;
+}
+
 void CustomUsbSerialStream::streamThread() {
   QSerialPort serial;
   serial.setPortName(port_);
@@ -510,6 +522,13 @@ void CustomUsbSerialStream::streamThread() {
             tx_in_flight_ = 0;
             clearRepeat();
           }
+          continue;
+        }
+        if (raw[1] == DK_LOG) {
+          constexpr size_t log_history_limit = 2000;
+          if (firmware_log_.size() == log_history_limit) firmware_log_.pop_front();
+          firmware_log_.push_back(QString::fromUtf8(reinterpret_cast<const char*>(raw + 20), n - 22));
+          ++firmware_log_count_;
           continue;
         }
         if (raw[1] == DK_UTILIZATION) {

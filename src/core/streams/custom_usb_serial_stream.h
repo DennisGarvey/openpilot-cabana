@@ -19,6 +19,7 @@ class CustomUsbSerialStream : public LiveStream {
   };
   QString captureStatus(int metrics = 0) const;
   QString captureDetails() const;
+  QString firmwareLogSince(uint64_t& cursor) const;
   struct CaptureCounters {
     uint64_t missing_frames;
     uint64_t queue_drops;
@@ -80,6 +81,8 @@ class CustomUsbSerialStream : public LiveStream {
   qint32 baud_rate_;
   mutable std::mutex stats_mutex_;
   QString error_;
+  std::deque<QString> firmware_log_;
+  uint64_t firmware_log_count_ = 0;
   QDeadlineTimer tx_capability_{0}, tx_deadline_{0};
   uint32_t tx_boot_id_ = 0, tx_sequence_ = 0, tx_in_flight_ = 0;
   QByteArray tx_request_;

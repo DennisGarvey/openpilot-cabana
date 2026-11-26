@@ -2,7 +2,9 @@
 #include <QCheckBox>
 #include <QDir>
 #include <QDialog>
+#include <QEventLoop>
 #include <QLabel>
+#include <QPlainTextEdit>
 #include <QTimer>
 #include <QtCharts/QLegendMarker>
 #include <iostream>
@@ -245,6 +247,24 @@ int main(int argc, char** argv) {
         utilization->cpu[1] != 345 || utilization->spi != 456 || utilization->can[0] != 567 ||
         utilization->can[1] != 678) {
       app.exit(14);
+      return;
+    }
+    QWidget log_owner;
+    CustomUsbSerialWidget::showFirmwareLogDialog(&log_owner, &stream);
+    CustomUsbSerialWidget::showFirmwareLogDialog(&log_owner, &stream);
+    const auto log_dialogs = log_owner.findChildren<QDialog*>(Qt::FindDirectChildrenOnly);
+    if (log_dialogs.size() != 1 || log_dialogs.front()->isModal() ||
+        log_dialogs.front()->windowTitle() != "Firmware Log") {
+      app.exit(24);
+      return;
+    }
+    auto* log_output = log_dialogs.front()->findChild<QPlainTextEdit*>();
+    QEventLoop log_update;
+    QTimer::singleShot(150, &log_update, &QEventLoop::quit);
+    log_update.exec();
+    if (!log_output || !log_output->isReadOnly() ||
+        log_output->toPlainText() != QString::fromUtf8("I (1) dac: démarre\nI (2) can_mgr: ready\n")) {
+      app.exit(25);
       return;
     }
     const int previous_metrics = std::exchange(settings.usb_status_metrics, 0);
