@@ -222,8 +222,9 @@ int main(int argc, char** argv) {
       app.exit(1);
       return;
     }
-    if (events[0]->address != 0x132 || events[0]->src != 0 || events[0]->size != 8 || events[1]->address != 0x1abcde ||
-        events[1]->src != 1 || events[1]->size != 64 || events[1]->dat[63] != 63 || events[2]->size != 0) {
+    if (events[0]->address != 0x1abcde || events[0]->src != 1 || events[0]->size != 64 || events[0]->dat[63] != 63 ||
+        events[1]->address != 0x132 || events[1]->src != 0 || events[1]->size != 8 || events[2]->size != 0 ||
+        events[1]->mono_ns - events[0]->mono_ns != 50000) {
       app.exit(3);
       return;
     }

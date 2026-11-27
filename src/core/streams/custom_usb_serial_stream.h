@@ -100,5 +100,5 @@ class CustomUsbSerialStream : public LiveStream {
   QDeadlineTimer utilization_expiry_{0};
   uint64_t frames_[2] = {}, gaps_[2] = {};
   uint64_t queue_drops_[2] = {}, overflows_[2] = {}, usb_aborts_ = 0;
-  uint64_t corrupt_ = 0, resets_ = 0, last_record_ms_ = 0;
+  uint64_t corrupt_ = 0, resets_ = 0, last_record_ms_ = 0, late_timestamps_ = 0;
 };

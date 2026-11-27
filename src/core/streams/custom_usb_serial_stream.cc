@@ -3,7 +3,9 @@
 #include <QRandomGenerator>
 #include <QSerialPort>
 #include <QThread>
+#include <queue>
 #include <stdexcept>
+#include <tuple>
 
 #include "custom_usb_serial_protocol.h"
 
@@ -67,7 +69,7 @@ QString CustomUsbSerialStream::captureDetails() const {
              "Bus 1: %5 frames, %6 sequence gaps, %7 queue drops, %8 FIFO overflow events\n"
              "USB aborted writes: %9; invalid records: %10; device restarts: %11\n"
              "FIFO events mean at least one lost frame each. Queue, USB and sequence loss overlap.\n"
-             "Timestamps are device software receive times.")
+             "Late CAN timestamps: %12")
       .arg(frames_[0])
       .arg(gaps_[0])
       .arg(queue_drops_[0])
@@ -78,7 +80,8 @@ QString CustomUsbSerialStream::captureDetails() const {
       .arg(overflows_[1])
       .arg(usb_aborts_)
       .arg(corrupt_)
-      .arg(resets_);
+      .arg(resets_)
+      .arg(late_timestamps_);
 }
 
 std::optional<CustomUsbSerialStream::Utilization> CustomUsbSerialStream::utilization() const {
@@ -289,7 +292,46 @@ void CustomUsbSerialStream::streamThread() {
   bool discarding = false, have_boot = false;
   uint32_t boot_id = 0, last_sequence[2] = {};
   bool have_sequence[2] = {};
-  uint64_t last_ns = 0, time_offset = 0;
+  constexpr int reorder_ms = 3;
+  constexpr uint64_t reorder_ns = reorder_ms * 1000000ULL;
+  struct PendingFrame {
+    uint64_t timestamp;
+    uint64_t order;
+    QDeadlineTimer deadline;
+    uint8_t source;
+    uint32_t address;
+    QByteArray data;
+
+    bool operator>(const PendingFrame& other) const {
+      return std::tie(timestamp, order) > std::tie(other.timestamp, other.order);
+    }
+  };
+  std::priority_queue<PendingFrame, std::vector<PendingFrame>, std::greater<PendingFrame>> reorder;
+  uint64_t last_ns = 0, last_source_ns = 0, newest_ns = 0, time_offset = 0, order = 0;
+  auto publishReady = [&](bool flush = false) {
+    uint64_t late = 0;
+    while (!reorder.empty()) {
+      const auto& frame = reorder.top();
+      if (!flush && newest_ns - frame.timestamp < reorder_ns && !frame.deadline.hasExpired()) break;
+      late += frame.timestamp < last_source_ns;
+      last_source_ns = std::max(last_source_ns, frame.timestamp);
+      // Playback resumes strictly after its cursor, including tied timestamps.
+      last_ns = std::max(last_ns + 1, frame.timestamp);
+      MessageBuilder message;
+      auto event = message.initEvent();
+      event.setLogMonoTime(last_ns);
+      auto can = event.initCan(1);
+      can[0].setSrc(frame.source);
+      can[0].setAddress(frame.address);
+      can[0].setDat(kj::arrayPtr(reinterpret_cast<const uint8_t*>(frame.data.constData()), frame.data.size()));
+      handleEvent(capnp::messageToFlatArray(message));
+      reorder.pop();
+    }
+    if (late) {
+      std::lock_guard lock(stats_mutex_);
+      late_timestamps_ += late;
+    }
+  };
   uint64_t queue_base[2] = {}, overflow_base[2] = {}, usb_base = 0;
   while (!QThread::currentThread()->isInterruptionRequested()) {
     if (session_ready && session_activity.hasExpired()) {
@@ -348,7 +390,9 @@ void CustomUsbSerialStream::streamThread() {
         break;
       }
     }
-    if (!serial.bytesAvailable() && !serial.waitForReadyRead(100)) {
+    publishReady();
+    const int read_wait = reorder.empty() ? 100 : std::max(1, int(reorder.top().deadline.remainingTime()));
+    if (!serial.bytesAvailable() && !serial.waitForReadyRead(read_wait)) {
       if (serial.error() != QSerialPort::NoError && serial.error() != QSerialPort::TimeoutError) {
         setError(serial.errorString());
         break;
@@ -551,7 +595,8 @@ void CustomUsbSerialStream::streamThread() {
             overflow_base[i] = overflows_[i];
           }
           usb_base = usb_aborts_;
-          time_offset = last_ns && device_ns <= last_ns ? last_ns + 1 - device_ns : 0;
+          const uint64_t watermark = std::max(newest_ns, last_ns);
+          time_offset = watermark && device_ns <= watermark ? watermark + 1 - device_ns : 0;
         }
         if (raw[1] == DK_STATUS) {
           queue_drops_[bus] = queue_base[bus] + dk_get(raw + 20, 4);
@@ -579,20 +624,15 @@ void CustomUsbSerialStream::streamThread() {
           }
         }
       }
-      // Playback resumes strictly after its cursor. Give tied or late USB
-      // records distinct times so a later batch can still update playback.
-      last_ns = std::max(last_ns + 1, device_ns + time_offset);
-      MessageBuilder message;
-      auto event = message.initEvent();
-      event.setLogMonoTime(last_ns);
-      auto can = event.initCan(1);
-      can[0].setSrc(tx_frame ? bus + TxSourceOffset : bus);
-      can[0].setAddress(dk_get(raw + 20, 4));
+      const uint64_t timestamp = device_ns + time_offset;
+      newest_ns = std::max(newest_ns, timestamp);
       // RTR carries no payload.
-      can[0].setDat(kj::arrayPtr(raw + 25, (raw[3] & 2) ? 0 : raw[24]));
-      handleEvent(capnp::messageToFlatArray(message));
+      reorder.push({timestamp, order++, QDeadlineTimer(reorder_ms, Qt::PreciseTimer),
+                    static_cast<uint8_t>(tx_frame ? bus + TxSourceOffset : bus), static_cast<uint32_t>(dk_get(raw + 20, 4)),
+                    QByteArray(reinterpret_cast<const char*>(raw + 25), (raw[3] & 2) ? 0 : raw[24])});
     }
   }
+  publishReady(true);
   if (QThread::currentThread()->isInterruptionRequested() && serial.isOpen()) {
     const auto stop = sessionControl(DK_SESSION_STOP);
     if (serial.write(stop) == stop.size()) serial.waitForBytesWritten(50);

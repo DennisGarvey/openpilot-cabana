@@ -99,10 +99,10 @@ def main():
             os.write(master, stale + encode(session_record(1, session ^ 1, 123)) + stale +
                      encode(session_record(1, boot_id=123)))
             stream = b'boot text\0' + b'\x01' * 200 + b'\0'
-            stream += frame(0, 0xfffffffe, 1000, 0x132, b'12345678')
+            stream += frame(0, 0xfffffffe, 1050, 0x132, b'12345678')
             stream += encode(struct.pack('<BBBBIIQ', 1, 13, 0, 0, 123, 0, 1001) +
                              'I (1) dac: démarre\n'.encode())
-            stream += frame(1, 1, 1100, 0x1abcde, bytes(range(64)), 13)
+            stream += frame(1, 1, 1000, 0x1abcde, bytes(range(64)), 13)
             stream += frame(0, 0xffffffff, 1200, 0x200, b'\0' * 8, 2)
             stream += frame(0, 0, 1300, 0x201, b'\xff')
             stream += frame(0, 2, 1400, 0x202, b'\0\xff')
@@ -113,9 +113,9 @@ def main():
             stream += encode(struct.pack('<BBBBIIQ', 1, 13, 0, 0, 124, 0, 125) +
                              b'I (2) can_mgr: ready\n')
             stream += encode(struct.pack('<BBBBIIQ6H', 1, 9, 0, 0, 124, 0, 130, 123, 234, 345, 456, 567, 678))
-            # Exercise arbitrary serial boundaries, including a one-byte read.
+            # Split the wire records, delivering both reordered frames in the final write.
             start = 0
-            for size in (1, 7, 2, 29, 1, 64, 3, 5, 200, len(stream)):
+            for size in (1, 7, 2, 29, 1, 64, 3, 5, 108, len(stream)):
                 chunk = stream[start:start + size]
                 if chunk:
                     os.write(master, chunk)
