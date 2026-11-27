@@ -20,7 +20,7 @@ Originally developed as the CAN analysis tool for **[openpilot](https://github.c
 - **Video sync** — multi-camera playback locked to the CAN timeline
 - **Log stitching** — merge multiple log files into one continuous timeline
 - **CAN FD** — frames up to 64 bytes
-- **DBC editor** — full editing with undo/redo, value tables, and CSV export
+- **DBC editor** — full editing with undo/redo and value tables
 
 ### Supported Sources
 
