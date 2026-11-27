@@ -25,6 +25,7 @@
 #include "core/streams/custom_usb_serial_protocol.h"
 #include "core/streams/custom_usb_serial_stream.h"
 #include "modules/settings/settings.h"
+#include "modules/system/stream_manager.h"
 
 namespace {
 
@@ -244,7 +245,11 @@ void CustomUsbSerialWidget::showFirmwareLogDialog(QWidget* parent, CustomUsbSeri
   dialog->setObjectName(name);
   dialog->setWindowTitle(tr("Firmware Log"));
   dialog->resize(780, 440);
+  if (usb_stream == StreamManager::stream()) {
+    connect(&StreamManager::instance(), &StreamManager::streamChanged, dialog, &QDialog::close);
+  }
   connect(usb_stream, &QObject::destroyed, dialog, &QDialog::close);
+  connect(dialog, &QDialog::finished, dialog, [dialog] { dialog->setObjectName({}); });
 
   auto* layout = new QVBoxLayout(dialog);
   auto* status = new QLabel(tr("Waiting for firmware logs…"), dialog);
@@ -280,11 +285,10 @@ void CustomUsbSerialWidget::showDeviceMetricsDialog(QWidget* parent, CustomUsbSe
     existing->activateWindow();
     return;
   }
-  QPointer<CustomUsbSerialStream> stream(usb_stream);
   auto* dialog = new QDialog(parent, Qt::Window);
   dialog->setAttribute(Qt::WA_DeleteOnClose);
   dialog->setObjectName(name);
-  connect(usb_stream, &QObject::destroyed, dialog, &QDialog::close);
+  connect(dialog, &QDialog::finished, dialog, [dialog] { dialog->setObjectName({}); });
   dialog->setWindowTitle(tr("USB Serial Device Metrics"));
   auto* form = new QFormLayout(dialog);
   using Metric = CustomUsbSerialStream::StatusMetric;
@@ -328,7 +332,11 @@ void CustomUsbSerialWidget::showDeviceMetricsDialog(QWidget* parent, CustomUsbSe
   connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
   form->addRow(buttons);
 
-  auto refresh = [stream, serial, cpu0, cpu1, spi, can0, can1, gaps, drops, fifo_a, fifo_b, invalid, status] {
+  const bool follow_active_stream = usb_stream == StreamManager::stream();
+  auto refresh = [initial_stream = QPointer(usb_stream), follow_active_stream,
+                  serial, cpu0, cpu1, spi, can0, can1, gaps, drops, fifo_a, fifo_b, invalid, status] {
+    const auto* stream = follow_active_stream ? dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())
+                                              : initial_stream.data();
     const auto values = stream ? stream->utilization() : std::nullopt;
     auto format = [&](uint16_t value) {
       return values ? tr("%L1%").arg(value / 10.0, 0, 'f', 1) : QStringLiteral("—");
@@ -347,11 +355,16 @@ void CustomUsbSerialWidget::showDeviceMetricsDialog(QWidget* parent, CustomUsbSe
       fifo_a->setText(tr("%L1").arg(counters.fifo_overflow_events[0]));
       fifo_b->setText(tr("%L1").arg(counters.fifo_overflow_events[1]));
       invalid->setText(tr("%L1").arg(counters.invalid_records));
+    } else {
+      for (auto* counter : {gaps, drops, fifo_a, fifo_b, invalid}) counter->setText(QStringLiteral("—"));
     }
     status->setText(!stream ? tr("Stream closed.") : values ? QString() : tr("Waiting for utilization data from the adapter."));
   };
   auto* timer = new QTimer(dialog);
   connect(timer, &QTimer::timeout, dialog, refresh);
+  if (follow_active_stream) {
+    connect(&StreamManager::instance(), &StreamManager::streamChanged, dialog, refresh);
+  }
   refresh();
   timer->start(500);
   dialog->show();

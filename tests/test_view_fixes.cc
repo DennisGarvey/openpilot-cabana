@@ -1,7 +1,9 @@
 #include <QAbstractButton>
 #include <QApplication>
+#include <QDialog>
 #include <QFile>
 #include <QEventLoop>
+#include <QLabel>
 #include <QMessageBox>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -15,12 +17,16 @@
 
 #include "core/commands/commands.h"
 #include "core/streams/asc_log_stream.h"
+#include "core/streams/custom_usb_serial_stream.h"
+#include "core/streams/device_stream.h"
 #include "core/streams/live_stream.h"
 #include "modules/dbc/dbc_controller.h"
 #include "modules/inspector/signal_editor/signal_editor.h"
 #include "modules/message_list/message_list.h"
 #include "modules/settings/settings.h"
+#include "modules/streams/custom_usb_serial.h"
 #include "modules/system/stream_manager.h"
+#include "widgets/status_bar.h"
 
 class TestStream : public LiveStream {
  public:
@@ -101,8 +107,82 @@ static bool seekThroughAscGap(QApplication& app, const QString& path) {
   return passed;
 }
 
+static bool hasLabel(const QWidget& widget, const QString& text) {
+  return std::ranges::any_of(widget.findChildren<QLabel*>(),
+                             [&](const QLabel* label) { return label->text().simplified().contains(text); });
+}
+
+static bool checkLiveStatusBar() {
+  class TestDeviceStream : public DeviceStream {
+   public:
+    TestDeviceStream() : DeviceStream(&StreamManager::instance()) {}
+    void start() override {}
+    void addBatch(int count) {
+      std::vector<const CanEvent*> batch;
+      const uint8_t data = 42;
+      for (int i = 0; i < count; ++i) {
+        batch.push_back(newEvent(++timestamp_, 0, 42, &data, 1));
+      }
+      mergeEvents(batch);
+    }
+
+   private:
+    uint64_t timestamp_ = 0;
+  };
+
+  StatusBar status;
+  auto& manager = StreamManager::instance();
+  auto* stream = new TestDeviceStream;
+  manager.setStream(stream);
+  stream->addBatch(5);
+  stream->addBatch(2);
+  QApplication::processEvents();
+  status.updateMetrics();
+  const bool received = hasLabel(status, "Last 1s: 7 events") && hasLabel(status, "Total: 7 events");
+  stream->addBatch(1);
+  QApplication::processEvents();
+  status.updateMetrics();
+  const bool smaller_batch = hasLabel(status, "Last 1s: 1 events") && hasLabel(status, "Total: 8 events");
+  status.updateMetrics();
+  const bool idle = hasLabel(status, "Last 1s: 0 events") && hasLabel(status, "Total: 8 events");
+  manager.setStream(new TestDeviceStream);
+  status.updateMetrics();
+  const bool reset = hasLabel(status, "Last 1s: 0 events") && hasLabel(status, "Total: 0 events");
+  manager.closeStream();
+  return received && smaller_batch && idle && reset;
+}
+
+static bool checkUsbMetricsReconnect() {
+  class TestUsbStream : public CustomUsbSerialStream {
+   public:
+    TestUsbStream() : CustomUsbSerialStream(&StreamManager::instance(), "test") {}
+    void start() override {}
+  };
+
+  QWidget parent;
+  auto& manager = StreamManager::instance();
+  auto* stream = new TestUsbStream;
+  manager.setStream(stream);
+  CustomUsbSerialWidget::showDeviceMetricsDialog(&parent, stream);
+  auto* dialog = parent.findChild<QDialog*>("usb_serial_device_metrics");
+  if (!dialog) {
+    manager.closeStream();
+    return false;
+  }
+  CustomUsbSerialWidget::showFirmwareLogDialog(&parent, stream);
+  manager.closeStream();
+  const bool closed = hasLabel(*dialog, "Stream closed.") && !hasLabel(*dialog, "Waiting for utilization data") &&
+                      !parent.findChild<QDialog*>("usb_serial_firmware_log");
+  manager.setStream(new TestUsbStream);
+  const bool reopened = hasLabel(*dialog, "Waiting for utilization data") && !hasLabel(*dialog, "Stream closed.");
+  manager.closeStream();
+  return closed && reopened;
+}
+
 int main(int argc, char** argv) {
   QApplication app(argc, argv);
+  if (!checkLiveStatusBar()) return 32;
+  if (!checkUsbMetricsReconnect()) return 33;
   QTemporaryDir temp(QDir::currentPath() + "/build/view-fixes-XXXXXX");
   if (!seekThroughAscGap(app, temp.filePath("gap.asc"))) return 24;
   const QString file = temp.filePath("mux.dbc");

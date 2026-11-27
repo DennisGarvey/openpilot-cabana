@@ -1,6 +1,7 @@
 #include "status_bar.h"
 
 #include <chrono>
+#include <utility>
 #include <unistd.h>
 
 #include <QFontDatabase>
@@ -19,8 +20,7 @@
 #include <numeric>
 #elif __APPLE__
 #include <mach/mach.h>
-#include <mach/mach_host.h>
-#include <mach/processor_info.h>
+#include <mach/mach_time.h>
 #endif
 #include "modules/settings/settings.h"
 #include "replay/include/util.h"
@@ -65,40 +65,25 @@ StatusBar::StatusBar(QWidget* parent) : QStatusBar(parent) {
   connect(&settings, &Settings::usbStatusMetricsChanged, this, &StatusBar::updateUsbMetrics);
   timer_ = new QTimer(this);
   connect(timer_, &QTimer::timeout, this, &StatusBar::updateMetrics);
-  timer_->start(2000);
+  timer_->setTimerType(Qt::PreciseTimer);
+  timer_->start(1000);
 }
 
 void StatusBar::monitorLiveStream() {
-  // Only monitor remote device streams (not local logs/replays)
-  if (StreamManager::instance().isLiveStream() && 
-      dynamic_cast<DeviceStream*>(StreamManager::stream()) != nullptr) {
-    connect(StreamManager::stream(), &AbstractStream::eventsMerged, this, [this](const MessageEventsMap& events_map) {
-      int64_t total_events = 0;
-      uint64_t total_size = 0;
-      for (const auto& [id, events] : events_map) {
-        total_events += events.size();
-        for (const auto* e : events) {
-          total_size += sizeof(CanEvent) + e->size;
+  total_event_count_ = last_event_count_ = 0;
+  total_data_size_ = last_data_size_ = 0;
+  last_time_ = std::chrono::steady_clock::now();
+  live_stats_label_->clear();
+  live_stats_label_->setToolTip("");
+  updateUsbMetrics();
+
+  if (auto* stream = dynamic_cast<DeviceStream*>(StreamManager::stream())) {
+    connect(stream, &AbstractStream::eventsMerged, this, [this](const MessageEventsMap& batch) {
+      for (const auto& [id, events] : batch) {
+        total_event_count_ += events.size();
+        for (const auto* event : events) {
+          total_data_size_ += sizeof(CanEvent) + event->size;
         }
-      }
-
-      auto now = std::chrono::steady_clock::now();
-      auto elapsed = std::chrono::duration<double>(now - last_time_).count();
-      if (elapsed >= 1.0) {
-        // Calculate average interval (ms) over the last period
-        int64_t event_delta = total_events - last_event_count_;
-        if (event_delta > 0) {
-          last_avg_interval_ = (elapsed * 1000.0) / event_delta;
-        }
-
-        // Update last minute counters
-        last_minute_count_ = total_events - last_event_count_;
-        last_minute_data_ = total_size - last_data_size_;
-
-        // Reset counters for next interval
-        last_event_count_ = total_events;
-        last_data_size_ = total_size;
-        last_time_ = now;
       }
     });
   }
@@ -115,27 +100,18 @@ void StatusBar::updateMetrics() {
   double cpu_percent = 0.0;
   double mem_mb = 0.0;
 
-  // Update live stream stats if active
-  if (StreamManager::instance().isLiveStream() && 
-      dynamic_cast<DeviceStream*>(StreamManager::stream()) != nullptr) {
-    // Calculate total events and data size
-    int64_t total_event_count = 0;
-    uint64_t total_data_size = 0;
-    const auto& events_map = StreamManager::stream()->eventsMap();
-    for (const auto& [id, events] : events_map) {
-      total_event_count += events.size();
-      for (const auto* e : events) {
-        total_data_size += sizeof(CanEvent) + e->size;
-      }
-    }
-
-    QString stats_text = QString("Avg: %1ms | Last 1s: %2 events (%3) | Total: %4 events (%5)")
-                            .arg(last_avg_interval_, 6, 'f', 2)
-                            .arg(last_minute_count_, 6)
-                            .arg(QString::fromStdString(formattedDataSize(last_minute_data_)))
-                            .arg(total_event_count, 6)
-                            .arg(QString::fromStdString(formattedDataSize(total_data_size)));
-    live_stats_label_->setText(stats_text);
+  if (dynamic_cast<DeviceStream*>(StreamManager::stream())) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration<double, std::milli>(now - std::exchange(last_time_, now)).count();
+    const auto events = total_event_count_ - std::exchange(last_event_count_, total_event_count_);
+    const auto bytes = total_data_size_ - std::exchange(last_data_size_, total_data_size_);
+    const double avg_interval = events > 0 ? elapsed / events : 0.0;
+    live_stats_label_->setText(QString("Avg: %1ms | Last 1s: %2 events (%3) | Total: %4 events (%5)")
+                                  .arg(avg_interval, 6, 'f', 2)
+                                  .arg(events, 6)
+                                  .arg(QString::fromStdString(formattedDataSize(bytes)))
+                                  .arg(total_event_count_, 6)
+                                  .arg(QString::fromStdString(formattedDataSize(total_data_size_))));
   } else if (dynamic_cast<CustomUsbSerialStream*>(StreamManager::stream())) {
     updateUsbMetrics();
   } else {
@@ -168,18 +144,25 @@ void StatusBar::updateMetrics() {
   if (stat_m >> pages >> pages) mem_mb = (pages * sysconf(_SC_PAGESIZE)) / 1024.0 / 1024.0;
 
 #elif __APPLE__
-  task_thread_times_info_data_t thread_info;
-  mach_msg_type_number_t count = TASK_THREAD_TIMES_INFO_COUNT;
-  if (task_info(mach_task_self(), TASK_THREAD_TIMES_INFO, (task_info_t)&thread_info, &count) == KERN_SUCCESS) {
-    uint64_t user_time = thread_info.user_time.seconds * 1000000 + thread_info.user_time.microseconds;
-    uint64_t sys_time = thread_info.system_time.seconds * 1000000 + thread_info.system_time.microseconds;
-    uint64_t total_proc_time = user_time + sys_time;
-
-    if (last_proc_time_ > 0) {
-      // macOS task_info provides absolute time; we divide by the timer interval (2s)
-      cpu_percent = (double)(total_proc_time - last_proc_time_) / (2000000.0) * 100.0;
+  static const auto timebase = [] {
+    mach_timebase_info_data_t info{};
+    mach_timebase_info(&info);
+    return info;
+  }();
+  task_absolutetime_info_data_t cpu_times;
+  mach_msg_type_number_t count = TASK_ABSOLUTETIME_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_ABSOLUTETIME_INFO, (task_info_t)&cpu_times, &count) == KERN_SUCCESS) {
+    // Task totals include CPU time from threads that have exited.
+    const uint64_t total = cpu_times.total_user + cpu_times.total_system;
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration<double, std::nano>(now - last_cpu_sample_).count();
+    if (last_cpu_sample_ != std::chrono::steady_clock::time_point{} && total >= last_proc_time_ &&
+        elapsed > 0 && timebase.denom != 0) {
+      const double cpu_ns = static_cast<double>(total - last_proc_time_) * timebase.numer / timebase.denom;
+      cpu_percent = 100.0 * cpu_ns / elapsed;
     }
-    last_proc_time_ = total_proc_time;
+    last_proc_time_ = total;
+    last_cpu_sample_ = now;
   }
 
   struct mach_task_basic_info info;

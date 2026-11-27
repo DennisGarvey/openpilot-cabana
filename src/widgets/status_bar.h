@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QStatusBar>
+#include <chrono>
 
 class QLabel;
 class QProgressBar;
@@ -34,7 +35,9 @@ class StatusBar : public QStatusBar {
   int64_t last_event_count_ = 0;
   uint64_t last_data_size_ = 0;
   std::chrono::steady_clock::time_point last_time_ = std::chrono::steady_clock::now();
-  double last_avg_interval_ = 0.0;
-  int64_t last_minute_count_ = 0;
-  uint64_t last_minute_data_ = 0;
+  int64_t total_event_count_ = 0;
+  uint64_t total_data_size_ = 0;
+#ifdef __APPLE__
+  std::chrono::steady_clock::time_point last_cpu_sample_;
+#endif
 };
