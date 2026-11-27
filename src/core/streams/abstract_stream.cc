@@ -214,12 +214,16 @@ void AbstractStream::mergeEvents(const std::vector<const CanEvent*>& events) {
 
   // Helper lambda to insert events while maintaining time order
   auto insert_ordered = [](std::vector<const CanEvent*>& target, const std::vector<const CanEvent*>& new_evs) {
-    bool is_append = target.empty() || new_evs.front()->mono_ns >= target.back()->mono_ns;
+    const auto split = target.empty() || target.back()->mono_ns <= new_evs.front()->mono_ns
+                           ? target.end()
+                           : std::ranges::upper_bound(target, new_evs.front()->mono_ns, {}, &CanEvent::mono_ns);
+    const auto index = std::distance(target.begin(), split);
+    const auto old_size = target.size();
+    target.insert(target.end(), new_evs.begin(), new_evs.end());
+    if (index == old_size) return true;
 
-    auto pos =
-        is_append ? target.end() : std::ranges::upper_bound(target, new_evs.front()->mono_ns, {}, &CanEvent::mono_ns);
-    target.insert(pos, new_evs.begin(), new_evs.end());
-    return is_append;
+    std::ranges::inplace_merge(target.begin() + index, target.begin() + old_size, target.end(), {}, &CanEvent::mono_ns);
+    return false;
   };
 
   // 2. Global list update (O(1) fast-path for live streams)

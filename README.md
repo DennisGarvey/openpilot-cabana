@@ -212,8 +212,9 @@ drop counters overlap. Silence and serial errors appear in the status bar.
 
 Cabana's event model displays bus, numeric ID and payload. Standard and extended
 frames sharing the same numeric ID appear together. RTR frames have an empty
-payload. Cabana reorders device-timestamped frames within a 3 ms window and
-reports late timestamps in the capture details.
+payload. Cabana buffers device-timestamped frames for at least 10 ms during live
+capture. Frames that arrive after the window are inserted at their original
+positions in the timeline and counted in the capture details.
 
 Transmit-capable firmware adds one-shot frame sending and DBC signal sending.
 Signal values can be sent once, at a fixed rate, or automatically restored when

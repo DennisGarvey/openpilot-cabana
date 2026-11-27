@@ -90,6 +90,7 @@ class AbstractStream : public QObject {
  protected:
   SourceSet sources_;
   void commitSnapshots();
+  void updateSnapshotsTo(double sec);
   void setPlaybackTime(double sec);
   void mergeEvents(const std::vector<const CanEvent*>& events);
   const CanEvent* newEvent(uint64_t mono_ns, const cereal::CanData::Reader& c) {
@@ -107,7 +108,6 @@ class AbstractStream : public QObject {
  private:
   static constexpr double kActivityCheckIntervalMs = 1000.0;
 
-  void updateSnapshotsTo(double sec);
   void updateMasks();
   void updateActivityStates();
   void updateMessageMask(const MessageId& id);

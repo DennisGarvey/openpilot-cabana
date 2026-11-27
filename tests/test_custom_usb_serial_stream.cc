@@ -170,7 +170,7 @@ int main(int argc, char** argv) {
     const auto& events = stream.allEvents();
     const bool has_ack_frame = feedback == "ack";
     const int ack_frames = has_ack_frame ? (repeat ? 2 : 1) : 0;
-    const size_t expected_events = 8 + ack_frames;
+    const size_t expected_events = 9 + ack_frames;
     if (has_ack_frame) {
       const auto& sent_frames = stream.events(MessageId(1 + CustomUsbSerialStream::TxSourceOffset, 0x22222));
       if (sent_frames.size() != ack_frames || sent_frames.front()->size != 64 || sent_frames.front()->dat[0] != 0x12 ||
@@ -234,10 +234,16 @@ int main(int argc, char** argv) {
         return;
       }
     }
+    const auto& reordered = stream.events(MessageId(0, 0x203));
+    if (reordered.size() != 2 || reordered[1]->mono_ns - reordered[0]->mono_ns != 5000 ||
+        !stream.captureDetails().contains("Late CAN timestamps: 1")) {
+      app.exit(25);
+      return;
+    }
     const auto status = stream.captureStatus();
     const auto details = stream.captureDetails();
     const auto counters = stream.captureCounters();
-    if (status != "USB 0:5 1:3" || counters.queue_drops != 1 || counters.missing_frames != 1 || counters.fifo_overflow_events[0] != 2 ||
+    if (status != "USB 0:6 1:3" || counters.queue_drops != 1 || counters.missing_frames != 1 || counters.fifo_overflow_events[0] != 2 ||
         counters.fifo_overflow_events[1] != 0 ||
         counters.invalid_records != 2 || !details.contains("device restarts: 1")) {
       app.exit(5);

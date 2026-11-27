@@ -37,6 +37,7 @@ class ChartSignal {
   void updatePointsVisible(double sec_per_px);
 
  private:
+  uint64_t begin_ns_ = 0;
   std::vector<QPointF> acknowledged_points_;
   std::pair<double, double> acknowledged_range_{-1, -1};
   bool acknowledged_dirty_ = true;

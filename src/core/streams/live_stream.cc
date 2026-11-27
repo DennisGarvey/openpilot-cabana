@@ -93,7 +93,6 @@ void LiveStream::timerEvent(QTimerEvent* event) {
 
   drainQueue();
   if (!all_events_.empty()) {
-    begin_ns_ = all_events_.front()->mono_ns;
     advancePlayback();
   }
 }
@@ -105,8 +104,14 @@ void LiveStream::drainQueue() {
     batch.swap(recv_queue_);
   }
   if (!batch.empty()) {
+    if (!std::ranges::is_sorted(batch, {}, &CanEvent::mono_ns)) {
+      std::stable_sort(batch.begin(), batch.end(), [](const auto* a, const auto* b) { return a->mono_ns < b->mono_ns; });
+    }
+    const bool revisit_cursor = anchor_wall_ns_ && batch.front()->mono_ns <= cursor_ns_;
     mergeEvents(batch);
+    begin_ns_ = all_events_.front()->mono_ns;
     latest_ns_ = std::max(latest_ns_, batch.back()->mono_ns);
+    if (revisit_cursor) updateSnapshotsTo(toSeconds(cursor_ns_));
   }
 }
 

@@ -292,8 +292,7 @@ void CustomUsbSerialStream::streamThread() {
   bool discarding = false, have_boot = false;
   uint32_t boot_id = 0, last_sequence[2] = {};
   bool have_sequence[2] = {};
-  constexpr int reorder_ms = 3;
-  constexpr uint64_t reorder_ns = reorder_ms * 1000000ULL;
+  constexpr int reorder_ms = 10;
   struct PendingFrame {
     uint64_t timestamp;
     uint64_t order;
@@ -307,19 +306,17 @@ void CustomUsbSerialStream::streamThread() {
     }
   };
   std::priority_queue<PendingFrame, std::vector<PendingFrame>, std::greater<PendingFrame>> reorder;
-  uint64_t last_ns = 0, last_source_ns = 0, newest_ns = 0, time_offset = 0, order = 0;
+  uint64_t last_source_ns = 0, newest_ns = 0, time_offset = 0, order = 0;
   auto publishReady = [&](bool flush = false) {
     uint64_t late = 0;
     while (!reorder.empty()) {
       const auto& frame = reorder.top();
-      if (!flush && newest_ns - frame.timestamp < reorder_ns && !frame.deadline.hasExpired()) break;
+      if (!flush && !frame.deadline.hasExpired()) break;
       late += frame.timestamp < last_source_ns;
       last_source_ns = std::max(last_source_ns, frame.timestamp);
-      // Playback resumes strictly after its cursor, including tied timestamps.
-      last_ns = std::max(last_ns + 1, frame.timestamp);
       MessageBuilder message;
       auto event = message.initEvent();
-      event.setLogMonoTime(last_ns);
+      event.setLogMonoTime(frame.timestamp);
       auto can = event.initCan(1);
       can[0].setSrc(frame.source);
       can[0].setAddress(frame.address);
@@ -595,8 +592,7 @@ void CustomUsbSerialStream::streamThread() {
             overflow_base[i] = overflows_[i];
           }
           usb_base = usb_aborts_;
-          const uint64_t watermark = std::max(newest_ns, last_ns);
-          time_offset = watermark && device_ns <= watermark ? watermark + 1 - device_ns : 0;
+          time_offset = newest_ns && device_ns <= newest_ns ? newest_ns + 1 - device_ns : 0;
         }
         if (raw[1] == DK_STATUS) {
           queue_drops_[bus] = queue_base[bus] + dk_get(raw + 20, 4);

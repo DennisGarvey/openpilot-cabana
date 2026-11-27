@@ -27,7 +27,21 @@ static void appendCanEvents(const dbc::Signal* sig, const std::vector<const CanE
 }
 
 void ChartSignal::prepareData(const MessageEventsMap* msg_new_events, double min_x, double max_x) {
-  // If no new events provided, we are doing a full refresh/clear
+  auto* can = StreamManager::stream();
+  if (msg_new_events) {
+    auto overlaps = [&](const MessageId& id) {
+      const auto it = msg_new_events->find(id);
+      return it != msg_new_events->end() && !it->second.empty() &&
+             !vals.empty() && can->toSeconds(it->second.front()->mono_ns) <= vals.back().x();
+    };
+    if (begin_ns_ != can->beginMonoNs() || overlaps(msg_id) ||
+        (acknowledged_series && overlaps(MessageId(msg_id.source + CustomUsbSerialStream::TxSourceOffset, msg_id.address)))) {
+      msg_new_events = nullptr;
+    }
+  }
+  begin_ns_ = can->beginMonoNs();
+
+  // An insertion into already plotted data also changes the adjoining step.
   if (!msg_new_events) {
     acknowledged_points_.clear();
     acknowledged_dirty_ = true;
@@ -38,7 +52,6 @@ void ChartSignal::prepareData(const MessageEventsMap* msg_new_events, double min
     series_dirty_ = true;
   }
 
-  auto* can = StreamManager::stream();
   auto events = msg_new_events ? msg_new_events : &can->eventsMap();
   std::vector<const CanEvent*> sent, merged;
   if (acknowledged_series) {
@@ -69,24 +82,7 @@ void ChartSignal::prepareData(const MessageEventsMap* msg_new_events, double min
   }
   if (trace->empty()) return;
 
-  if (vals.empty() || can->toSeconds(trace->back()->mono_ns) > vals.back().x()) {
-    appendCanEvents(sig, *trace, vals, step_vals, series_bounds);
-  } else {
-    std::vector<QPointF> tmp_vals, tmp_step_vals;
-    appendCanEvents(sig, *trace, tmp_vals, tmp_step_vals, series_bounds);
-
-    if (tmp_vals.empty()) return;
-
-    auto insert_pos = std::ranges::lower_bound(vals, tmp_vals.front().x(), {}, &QPointF::x);
-    vals.insert(insert_pos, tmp_vals.begin(), tmp_vals.end());
-
-    auto step_insert_pos = std::ranges::lower_bound(step_vals, tmp_step_vals.front().x(), {}, &QPointF::x);
-    step_vals.insert(step_insert_pos, tmp_step_vals.begin(), tmp_step_vals.end());
-
-    // Rebuild the bounds cache to ensure hierarchy is correct after insertion
-    series_bounds.clear();
-    for (const auto& p : vals) series_bounds.addPoint(p.y());
-  }
+  appendCanEvents(sig, *trace, vals, step_vals, series_bounds);
 
   series_dirty_ = true;
   last_range_ = {-1.0, -1.0};

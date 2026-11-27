@@ -36,6 +36,15 @@ class TestStream : public LiveStream {
     }
     return events({0, 42}).size() == 4096 && reallocations < 32;
   }
+  MessageEventsMap insertSamples(std::initializer_list<std::pair<uint64_t, uint8_t>> samples) {
+    std::vector<const CanEvent*> batch;
+    for (auto [ns, value] : samples) {
+      const uint8_t data[] = {1, value};
+      batch.push_back(newEvent(ns, 0, 42, data, 2));
+    }
+    mergeEvents(batch);
+    return {{MessageId{0, 42}, std::move(batch)}};
+  }
   QString routeName() const override { return "test"; }
   void push(uint64_t ns, uint8_t mux, uint8_t value, uint8_t source = 0) {
     MessageBuilder message;
@@ -113,6 +122,22 @@ int main(int argc, char** argv) {
   const auto saved_messages = settings.pinned_messages;
   settings.pinned_messages.clear();
   settings.pinned_signals = {MessageId(0, 42).toString() + "|BrickVoltage"};
+  bool chart_stopped = false;
+  {
+    auto* chart_stream = new TestStream(&app, chart_stopped);
+    StreamManager::instance().setStream(chart_stream);
+    const auto* signal = GetDBC()->msg({0, 42})->sig("BrickVoltage");
+    QLineSeries series;
+    ChartSignal chart_signal({0, 42}, signal, &series);
+    chart_stream->insertSamples({{1000000, 10}, {3000000, 30}});
+    chart_signal.prepareData(nullptr, 0, 1);
+    const auto update = chart_stream->insertSamples({{2000000, 20}, {4000000, 40}});
+    chart_signal.prepareData(&update, 0, 1);
+    if (chart_signal.vals != std::vector<QPointF>{{.001, 10}, {.002, 20}, {.003, 30}, {.004, 40}} ||
+        chart_signal.step_vals != std::vector<QPointF>{{.001, 10}, {.002, 10}, {.002, 20}, {.003, 20},
+                                                       {.003, 30}, {.004, 30}, {.004, 40}}) return 31;
+    StreamManager::instance().closeStream();
+  }
   bool stopped = false;
   auto* stream = new TestStream(&app, stopped);
   StreamManager::instance().setStream(stream);

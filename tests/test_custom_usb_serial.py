@@ -121,6 +121,9 @@ def main():
                     os.write(master, chunk)
                     start += len(chunk)
                     time.sleep(.005)
+            # A frame arrives after the reorder window and before two published frames in device time.
+            time.sleep(.080)
+            os.write(master, frame(0, 2, 105, 0x203, b'\x01', boot=124))
             repeat = os.environ.get('CABANA_TEST_TX_REPEAT')
             automatic = bool(repeat and repeat.startswith('automatic'))
             tx_result(master, 3, 1, 0, 0)
