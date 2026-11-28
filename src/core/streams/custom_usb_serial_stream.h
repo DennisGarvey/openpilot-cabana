@@ -46,6 +46,7 @@ class CustomUsbSerialStream : public LiveStream {
     uint32_t tx_count, tx_mean_us, tx_max_us, arbitration_losses;
     uint32_t rx_to_tx_count, rx_to_tx_mean_us;
     uint32_t same_fifo_mean, same_fifo_max, other_fifo_mean, other_fifo_max;
+    std::optional<uint32_t> rx_to_tx_max_us;
   };
   std::optional<TxLatency> txLatency(uint8_t bus) const;
 

@@ -615,6 +615,8 @@ void CustomUsbSerialStream::streamThread() {
               static_cast<uint32_t>(dk_get(raw + 96, 4)),
               static_cast<uint32_t>(dk_get(raw + 100, 4)),
               static_cast<uint32_t>(dk_get(raw + 104, 4)),
+              n == DK_TX_LATENCY_PEAK_SIZE + 2
+                  ? std::optional{static_cast<uint32_t>(dk_get(raw + 108, 4))} : std::nullopt,
           };
           continue;
         }

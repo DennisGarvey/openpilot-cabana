@@ -113,8 +113,8 @@ def main():
             stream += encode(struct.pack('<BBBBIIQ', 1, 13, 0, 0, 124, 0, 125) +
                              b'I (2) can_mgr: ready\n')
             stream += encode(struct.pack('<BBBBIIQ6H', 1, 9, 0, 0, 124, 0, 130, 123, 234, 345, 456, 567, 678))
-            latency = encode(struct.pack('<BBBBIIQ22I', 1, 14, 1, 0, 124, 0, 135,
-                                         5, 200, 220, 30, 40, 140, 170, 60, 80, 3, 4, 8, 7, 100, 180, 2, 4, 330, 1, 3, 3, 6))
+            latency = encode(struct.pack('<BBBBIIQ23I', 1, 14, 1, 0, 124, 0, 135,
+                                         5, 200, 220, 30, 40, 140, 170, 60, 80, 3, 4, 8, 7, 100, 180, 2, 4, 330, 1, 3, 3, 6, 900))
             stream += latency
             # Split the wire records, delivering both reordered frames in the final write.
             start = 0

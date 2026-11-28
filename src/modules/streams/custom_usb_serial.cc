@@ -93,6 +93,14 @@ QString lastSamples(uint32_t count) {
   return count == 1 ? QObject::tr("(Last 1 Sample)") : QObject::tr("(Last %L1 Samples)").arg(count);
 }
 
+QString fullPathTiming(const CustomUsbSerialStream::TxLatency& latency) {
+  QString timing = QObject::tr("%L1 ms avg").arg(latency.rx_to_tx_mean_us / 1000.0, 0, 'f', 2);
+  if (latency.rx_to_tx_max_us) {
+    timing += QObject::tr(" · %L1 ms peak").arg(*latency.rx_to_tx_max_us / 1000.0, 0, 'f', 2);
+  }
+  return timing + QLatin1Char(' ') + lastSamples(latency.rx_to_tx_count);
+}
+
 class TxTimingDiagram : public QWidget {
 public:
   explicit TxTimingDiagram(QWidget* parent) : QWidget(parent) {
@@ -131,6 +139,11 @@ public:
       content->addWidget(name);
       stages->addWidget(card, 1);
     }
+    full_path = new QLabel(this);
+    full_path->setAlignment(Qt::AlignCenter);
+    full_path->setFrameShape(QFrame::StyledPanel);
+    full_path->setMargin(6);
+    layout->addWidget(full_path);
   }
 
   void setLatency(const CustomUsbSerialStream::TxLatency& latency) {
@@ -146,10 +159,16 @@ public:
       const auto text = available[i] ? QObject::tr("%L1 µs avg\n%L2 µs peak").arg(averages[i]).arg(peaks[i]) : QStringLiteral("—");
       if (timings[i]->text() != text) timings[i]->setText(text);
     }
+    if (latency.rx_to_tx_count) {
+      const auto text = QObject::tr("Full Path · Frame Start to Successful Transmission\n%1").arg(fullPathTiming(latency));
+      if (full_path->text() != text) full_path->setText(text);
+    }
+    full_path->setVisible(latency.rx_to_tx_count != 0);
   }
 
 private:
   QLabel* heading;
+  QLabel* full_path;
   std::array<QLabel*, 4> timings{};
 };
 
@@ -713,9 +732,7 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
         ? stream->txLatency(id.source) : std::nullopt;
     QString summary;
     if (latency && latency->rx_to_tx_count) {
-      summary = tr("The average time from receiving a frame to transmitting its correction was %L1 ms.")
-                    .arg(latency->rx_to_tx_mean_us / 1000.0, 0, 'f', 2);
-      summary += QLatin1Char(' ') + lastSamples(latency->rx_to_tx_count);
+      summary = tr("Frame start to successful transmission · %1").arg(fullPathTiming(*latency));
     }
     if (latency_summary->text() != summary) latency_summary->setText(summary);
     form->setRowVisible(latency_summary, !summary.isEmpty());

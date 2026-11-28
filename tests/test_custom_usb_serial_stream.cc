@@ -265,7 +265,7 @@ int main(int argc, char** argv) {
         latency->drain_mean_us != 60 || latency->drain_max_us != 80 || latency->timeouts != 3 ||
         latency->ahead_mean != 4 || latency->ahead_max != 8 ||
         latency->tx_count != 7 || latency->tx_mean_us != 100 || latency->tx_max_us != 180 ||
-        latency->arbitration_losses != 2 || latency->rx_to_tx_count != 4 || latency->rx_to_tx_mean_us != 330 ||
+        latency->arbitration_losses != 2 || latency->rx_to_tx_count != 4 || latency->rx_to_tx_mean_us != 330 || latency->rx_to_tx_max_us != 900 ||
         latency->same_fifo_mean != 1 || latency->same_fifo_max != 3 ||
         latency->other_fifo_mean != 3 || latency->other_fifo_max != 6) {
       qCritical("Automatic TX latency metrics were not decoded");
@@ -340,7 +340,7 @@ int main(int argc, char** argv) {
         const auto labels = send_dialog->findChildren<QLabel*>();
         const auto buttons = send_dialog->findChildren<QToolButton*>();
         return std::none_of(labels.begin(), labels.end(), [](const QLabel* label) {
-                 return label->isVisible() && label->text().contains("The average time from receiving a frame");
+                 return label->isVisible() && label->text().contains("Frame start to successful transmission");
                }) &&
                std::none_of(buttons.begin(), buttons.end(), [](const QToolButton* button) {
                  return button->isVisible() && button->text() == "More info";
