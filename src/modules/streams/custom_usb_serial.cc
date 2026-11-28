@@ -7,9 +7,12 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFontDatabase>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
@@ -19,7 +22,9 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
+#include <array>
 
 #include "core/dbc/dbc_manager.h"
 #include "core/streams/custom_usb_serial_protocol.h"
@@ -66,6 +71,88 @@ const dbc::Signal* checksumSignal(const dbc::Msg* message, const dbc::Signal* re
   return found;
 }
 
+class TimingArrow : public QWidget {
+public:
+  explicit TimingArrow(QWidget* parent) : QWidget(parent) {
+    setMinimumSize(26, 14);
+  }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(QPen(palette().color(QPalette::Text), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    const int y = height() / 2;
+    const int end = width() - 3;
+    painter.drawLine(2, y, end, y);
+    painter.drawPolyline(QPolygon{QPoint(end - 5, y - 4), QPoint(end, y), QPoint(end - 5, y + 4)});
+  }
+};
+
+QString lastSamples(uint32_t count) {
+  return count == 1 ? QObject::tr("(Last 1 Sample)") : QObject::tr("(Last %L1 Samples)").arg(count);
+}
+
+class TxTimingDiagram : public QWidget {
+public:
+  explicit TxTimingDiagram(QWidget* parent) : QWidget(parent) {
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(5);
+    heading = new QLabel(this);
+    layout->addWidget(heading);
+    auto* stages = new QHBoxLayout;
+    stages->setSpacing(6);
+    layout->addLayout(stages);
+
+    const QStringList activity{QObject::tr("Wait for receive task"), QObject::tr("Read and detect overwrite"),
+                               QObject::tr("Prepare and queue correction"), QObject::tr("Wait to transmit")};
+    const QStringList explanation{
+        QObject::tr("From frame start until the receive task is awake. Zero when it is already running."),
+        QObject::tr("From the receive task being available until the firmware detects the overwrite."),
+        QObject::tr("From overwrite detection until the controller is asked to transmit."),
+        QObject::tr("From the transmit request to the controller timestamp for successful attempts.")};
+    for (int i = 0; i < activity.size(); ++i) {
+      if (i) stages->addWidget(new TimingArrow(this), 0, Qt::AlignVCenter);
+      auto* card = new QFrame(this);
+      card->setFrameShape(QFrame::StyledPanel);
+      card->setToolTip(explanation[i]);
+      auto* content = new QVBoxLayout(card);
+      content->setContentsMargins(8, 6, 8, 6);
+      content->setSpacing(3);
+      timings[i] = new QLabel(card);
+      timings[i]->setAlignment(Qt::AlignCenter);
+      auto font = timings[i]->font();
+      font.setBold(true);
+      timings[i]->setFont(font);
+      auto* name = new QLabel(activity[i], card);
+      name->setAlignment(Qt::AlignCenter);
+      content->addWidget(timings[i]);
+      content->addWidget(name);
+      stages->addWidget(card, 1);
+    }
+  }
+
+  void setLatency(const CustomUsbSerialStream::TxLatency& latency) {
+    const auto title = QObject::tr("Retransmission Timing %1").arg(lastSamples(latency.count ? latency.count : latency.tx_count));
+    if (heading->text() != title) heading->setText(title);
+    const std::array<uint32_t, 4> averages{latency.wake_mean_us, latency.drain_mean_us,
+                                           latency.submit_mean_us, latency.tx_mean_us};
+    const std::array<uint32_t, 4> peaks{latency.wake_max_us, latency.drain_max_us,
+                                        latency.submit_max_us, latency.tx_max_us};
+    const std::array<bool, 4> available{latency.count != 0, latency.count != 0,
+                                        latency.count != 0, latency.tx_count != 0};
+    for (int i = 0; i < 4; ++i) {
+      const auto text = available[i] ? QObject::tr("%L1 µs avg\n%L2 µs peak").arg(averages[i]).arg(peaks[i]) : QStringLiteral("—");
+      if (timings[i]->text() != text) timings[i]->setText(text);
+    }
+  }
+
+private:
+  QLabel* heading;
+  std::array<QLabel*, 4> timings{};
+};
+
 struct SendStatus {
   using TxState = CustomUsbSerialStream::TxState;
 
@@ -80,9 +167,9 @@ struct SendStatus {
     label->setTextFormat(Qt::PlainText);
     label->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     label->setWordWrap(true);
-    label->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     label->setMinimumWidth(320);
-    label->setFixedHeight(3 * label->fontMetrics().lineSpacing());
+    label->setMinimumHeight(3 * label->fontMetrics().lineSpacing());
+    label->setTextInteractionFlags(Qt::TextSelectableByMouse);
     status_layout->addWidget(indicator);
     status_layout->addWidget(label, 1);
     form.addRow(status_area);
@@ -486,6 +573,28 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   form->addRow(tr("Checksum"), recalculate_checksum);
   const SendControls controls(dialog, *form, usb_stream, true);
   SendStatus status(dialog, *form);
+  auto* latency_summary = new QLabel(&dialog);
+  latency_summary->setWordWrap(true);
+  auto* show_details = new QToolButton(&dialog);
+  show_details->setText(tr("More info"));
+  show_details->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  show_details->setArrowType(Qt::RightArrow);
+  show_details->setCheckable(true);
+  show_details->setAutoRaise(true);
+  auto* timing_diagram = new TxTimingDiagram(&dialog);
+  auto* details = new QLabel(&dialog);
+  details->setTextFormat(Qt::RichText);
+  details->setWordWrap(true);
+  details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  form->addRow(latency_summary);
+  form->addRow(show_details);
+  form->setAlignment(show_details, Qt::AlignLeft);
+  form->addRow(timing_diagram);
+  form->addRow(details);
+  form->setRowVisible(latency_summary, false);
+  form->setRowVisible(show_details, false);
+  form->setRowVisible(timing_diagram, false);
+  form->setRowVisible(details, false);
   form->setSizeConstraint(QLayout::SetFixedSize);
 
   auto getSignal = [&]() -> const dbc::Signal* {
@@ -527,6 +636,28 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
   using TxState = CustomUsbSerialStream::TxState;
   QString input_error;
   bool submitted = false;
+  auto format_stats = [&](const std::optional<CustomUsbSerialStream::TxLatency>& latency) {
+    if (!latency) return QString();
+    QString rows;
+    const auto row = [&](const QString& label, const QString& value) {
+      rows += QStringLiteral("<tr><td>%1</td><td><b>%2</b></td></tr>")
+                  .arg(label.toHtmlEscaped(), value.toHtmlEscaped());
+    };
+    if (latency->count) {
+      row(tr("Frame start to overwrite detection"),
+          tr("%L1 µs avg · %L2 µs peak").arg(latency->rx_mean_us).arg(latency->rx_max_us));
+      row(tr("Frames waiting when the task woke on timeout"), tr("%L1").arg(latency->timeouts));
+      row(tr("Frames processed first · same FIFO"),
+          tr("%L1 avg · %L2 peak").arg(latency->same_fifo_mean).arg(latency->same_fifo_max));
+      row(tr("Frames processed first · other FIFOs"),
+          tr("%L1 avg · %L2 peak").arg(latency->other_fifo_mean).arg(latency->other_fifo_max));
+      row(tr("All frames processed first (up to 32 counted)"),
+          tr("%L1 avg · %L2 peak").arg(latency->ahead_mean).arg(latency->ahead_max));
+    }
+    row(tr("Successful transmissions timed"), tr("%L1").arg(latency->tx_count));
+    row(tr("Attempts that only lost arbitration"), tr("%L1").arg(latency->arbitration_losses));
+    return QStringLiteral("<table cellspacing='3' cellpadding='3'>%1</table>").arg(rows);
+  };
   auto refresh = [&] {
     const auto* signal = getSignal();
     const bool has_frame = stream && signal && stream->latestDataFrame(id, signal).has_value();
@@ -545,11 +676,12 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
 
     TxState state = TxState::Waiting;
     QString message;
+    std::optional<CustomUsbSerialStream::TxErrorDetails> controller_error;
     if (!stream) {
       state = TxState::Error;
       message = tr("USB stream closed.");
     } else if (stream->repeatPending()) {
-      message = stream->txStatus(&state, submitted);
+      message = stream->txStatus(&state, submitted, &controller_error);
     } else if (!signal) {
       state = TxState::Error;
       message = tr("Signal definition is unavailable.");
@@ -564,10 +696,68 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
       state = TxState::Error;
       message = input_error;
     } else {
-      message = stream->txStatus(&state, submitted);
+      message = stream->txStatus(&state, submitted, &controller_error);
       if (message.isEmpty()) message = has_value ? tr("Ready to send.") : tr("Choose or enter a value to send.");
     }
+    QString error_details;
+    if (state == TxState::Error) {
+      const auto newline = message.indexOf(QLatin1Char('\n'));
+      if (newline >= 0) {
+        error_details = message.mid(newline + 1);
+        message.truncate(newline);
+      }
+    }
     status.show(state, message);
+
+    const auto latency = stream && submitted && controls.automatic()
+        ? stream->txLatency(id.source) : std::nullopt;
+    QString summary;
+    if (latency && latency->rx_to_tx_count) {
+      summary = tr("The average time from receiving a frame to transmitting its correction was %L1 ms.")
+                    .arg(latency->rx_to_tx_mean_us / 1000.0, 0, 'f', 2);
+      summary += QLatin1Char(' ') + lastSamples(latency->rx_to_tx_count);
+    }
+    if (latency_summary->text() != summary) latency_summary->setText(summary);
+    form->setRowVisible(latency_summary, !summary.isEmpty());
+    const bool has_details = controls.automatic() || !error_details.isEmpty();
+    form->setRowVisible(show_details, has_details);
+    const bool expanded = has_details && show_details->isChecked();
+    const bool show_diagram = expanded && latency && (latency->count || latency->tx_count);
+    if (show_diagram) timing_diagram->setLatency(*latency);
+    form->setRowVisible(timing_diagram, show_diagram);
+    if (expanded) {
+      QString text;
+      if (controller_error) {
+        text = QStringLiteral("<p><b>%1</b></p>").arg(tr("Controller error").toHtmlEscaped());
+        if (!controller_error->conditions.isEmpty()) {
+          QStringList conditions;
+          for (const auto& condition : controller_error->conditions)
+            conditions << QStringLiteral("<li>%1</li>").arg(condition.toHtmlEscaped());
+          text += QStringLiteral("<ul>%1</ul>").arg(conditions.join(QString()));
+        }
+        text += QStringLiteral("<table border='1' cellspacing='0' cellpadding='6'>"
+                               "<tr><th>%1</th><th>%2</th><th>%3</th></tr>"
+                               "<tr><td align='center'>%4</td><td align='center'>%5</td><td align='center'>%6</td></tr></table>")
+                    .arg(tr("Transmit error counter").toHtmlEscaped(), tr("Receive error counter").toHtmlEscaped(),
+                         tr("Acknowledged this session").toHtmlEscaped())
+                    .arg(controller_error->transmit_errors).arg(controller_error->receive_errors)
+                    .arg(controller_error->acknowledged);
+        text += QStringLiteral("<p><small>%1</small></p>")
+                    .arg(tr("Raw codes · FIFO 0x%1 · Bus diagnostics 0x%2")
+                             .arg(controller_error->fifo, 0, 16).arg(controller_error->bus_diagnostics, 0, 16).toHtmlEscaped());
+      } else if (!error_details.isEmpty()) {
+        text = QStringLiteral("<p>%1</p>").arg(error_details.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>")));
+      }
+      text += format_stats(latency);
+      if (controls.automatic() && !latency) {
+        const auto note = !submitted ? tr("Start automatic retransmission to collect timing data.")
+                        : stream && stream->repeatPending() ? tr("Waiting for timing data from the DashKit.")
+                        : tr("The DashKit reported no timing samples for this run.");
+        text += QStringLiteral("<p>%1</p>").arg(note.toHtmlEscaped());
+      }
+      if (details->text() != text) details->setText(text);
+    }
+    form->setRowVisible(details, expanded);
   };
 
   connect(controls.send, &QPushButton::clicked, &dialog, [&] {
@@ -621,7 +811,18 @@ void CustomUsbSerialWidget::showSendSignalDialog(QWidget* parent, CustomUsbSeria
 
   QTimer timer;
   connect(&timer, &QTimer::timeout, &dialog, refresh);
-  connect(controls.mode, &QComboBox::currentIndexChanged, &dialog, refresh);
+  connect(controls.mode, &QComboBox::currentIndexChanged, &dialog, [&] {
+    submitted = false;
+    input_error.clear();
+    const QSignalBlocker blocker(show_details);
+    show_details->setChecked(false);
+    show_details->setArrowType(Qt::RightArrow);
+    refresh();
+  });
+  connect(show_details, &QToolButton::toggled, &dialog, [&](bool expanded) {
+    show_details->setArrowType(expanded ? Qt::DownArrow : Qt::RightArrow);
+    refresh();
+  });
   auto value_changed = [&] {
     input_error.clear();
     refresh();

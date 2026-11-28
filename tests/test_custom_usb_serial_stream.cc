@@ -1,12 +1,15 @@
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QDialog>
 #include <QEventLoop>
 #include <QLabel>
 #include <QPlainTextEdit>
 #include <QTimer>
+#include <QToolButton>
 #include <QtCharts/QLegendMarker>
+#include <algorithm>
 #include <iostream>
 #include <utility>
 
@@ -145,20 +148,25 @@ int main(int argc, char** argv) {
     else if (repeat) expected_status = "Fixed-rate send finished";
     else if (qEnvironmentVariableIsSet("CABANA_TEST_TX_FIFO_FULL")) expected_status = "CAN bus 1 transmit queue is full";
     if (!feedback.isEmpty()) {
-      if (repeat) expected_status += ".\nAcknowledged frames: 2";
+      if (repeat) expected_status += ".\nAcknowledged frames (session total): 2";
       else if (feedback == "ack") expected_status = "Transmitted and acknowledged";
-      else if (feedback == "unconfirmed") expected_status = "without confirming transmission";
-      else if (feedback == "unknown") expected_status = "transmission outcome unknown";
+      else if (feedback == "unconfirmed") expected_status = "Could not confirm the send on CAN bus 1";
+      else if (feedback == "unknown") expected_status = "Could not determine whether the frame was sent on CAN bus 1";
     }
     if (!sent || stream.repeatPending() || !stream.txStatus().contains(expected_status)) {
       std::cerr << "Expected " << expected_status.toStdString() << ", got " << stream.txStatus().toStdString() << '\n';
       app.exit(9);
       return;
     }
-    if (feedback == "unconfirmed" &&
-        (!stream.txStatus().contains("missing ACK recorded by controller") || !stream.txStatus().contains("TEC 8, REC 0"))) {
-      app.exit(18);
-      return;
+    if (feedback == "unconfirmed") {
+      std::optional<CustomUsbSerialStream::TxErrorDetails> details;
+      const auto message = stream.txStatus(nullptr, true, &details);
+      if (!message.contains("recorded a missing acknowledgment") || !message.contains("transmit 8, receive 0") ||
+          !details || details->transmit_errors != 8 || details->receive_errors || details->acknowledged ||
+          details->fifo != 0x30 || details->bus_diagnostics != (1u << 18) || details->conditions.size() != 2) {
+        app.exit(18);
+        return;
+      }
     }
     CustomUsbSerialStream::TxState fresh_state;
     if (!stream.txStatus(&fresh_state, false).isEmpty() || fresh_state != CustomUsbSerialStream::TxState::Ready) {
@@ -249,6 +257,21 @@ int main(int argc, char** argv) {
       app.exit(5);
       return;
     }
+    const auto latency = stream.txLatency(1);
+    if (stream.txLatency(0) || !latency || latency->count != 5 ||
+        latency->rx_mean_us != 200 || latency->rx_max_us != 220 ||
+        latency->submit_mean_us != 30 || latency->submit_max_us != 40 ||
+        latency->wake_mean_us != 140 || latency->wake_max_us != 170 ||
+        latency->drain_mean_us != 60 || latency->drain_max_us != 80 || latency->timeouts != 3 ||
+        latency->ahead_mean != 4 || latency->ahead_max != 8 ||
+        latency->tx_count != 7 || latency->tx_mean_us != 100 || latency->tx_max_us != 180 ||
+        latency->arbitration_losses != 2 || latency->rx_to_tx_count != 4 || latency->rx_to_tx_mean_us != 330 ||
+        latency->same_fifo_mean != 1 || latency->same_fifo_max != 3 ||
+        latency->other_fifo_mean != 3 || latency->other_fifo_max != 6) {
+      qCritical("Automatic TX latency metrics were not decoded");
+      app.exit(1);
+      return;
+    }
     const auto utilization = stream.utilization();
     if (!utilization || utilization->serial != 123 || utilization->cpu[0] != 234 ||
         utilization->cpu[1] != 345 || utilization->spi != 456 || utilization->can[0] != 567 ||
@@ -300,8 +323,55 @@ int main(int argc, char** argv) {
         !labels.contains("USB Frame Sequence Gaps") || !labels.contains("CAN Controller A FIFO Overflow") ||
         !labels.contains("CAN Controller B FIFO Overflow") ||
         !labels.contains("Invalid USB Records") || !labels.contains("SPI utilization (shared)") || !labels.contains("45.6%") ||
-        !labels.contains("CAN bus 1 utilization") || !labels.contains("67.8%")) {
+        !labels.contains("CAN bus 1 utilization") || !labels.contains("67.8%") ||
+        std::any_of(labels.begin(), labels.end(), [](const QString& text) { return text.contains("RX → detection"); })) {
       app.exit(16);
+      return;
+    }
+    bool old_diagnostics_hidden = false;
+    QTimer::singleShot(0, &app, [&] {
+      auto* send_dialog = qobject_cast<QDialog*>(app.activeModalWidget());
+      if (!send_dialog) {
+        for (auto* dialog : owner.findChildren<QDialog*>(Qt::FindDirectChildrenOnly))
+          if (dialog->isModal()) dialog->reject();
+        return;
+      }
+      const auto diagnostics_hidden = [&] {
+        const auto labels = send_dialog->findChildren<QLabel*>();
+        const auto buttons = send_dialog->findChildren<QToolButton*>();
+        return std::none_of(labels.begin(), labels.end(), [](const QLabel* label) {
+                 return label->isVisible() && label->text().contains("The average time from receiving a frame");
+               }) &&
+               std::none_of(buttons.begin(), buttons.end(), [](const QToolButton* button) {
+                 return button->isVisible() && button->text() == "More info";
+               });
+      };
+      old_diagnostics_hidden = diagnostics_hidden();
+      for (auto* mode : send_dialog->findChildren<QComboBox*>()) {
+        const int automatic_index = mode->findText("Automatic Retransmission");
+        if (automatic_index < 0) continue;
+        mode->setCurrentIndex(automatic_index);
+        const auto buttons = send_dialog->findChildren<QToolButton*>();
+        const auto more_info = std::find_if(buttons.begin(), buttons.end(), [](const QToolButton* button) {
+          return button->isVisible() && button->text() == "More info";
+        });
+        if (more_info == buttons.end()) {
+          old_diagnostics_hidden = false;
+        } else {
+          (*more_info)->click();
+          const auto labels = send_dialog->findChildren<QLabel*>();
+          old_diagnostics_hidden &= std::any_of(labels.begin(), labels.end(), [](const QLabel* label) {
+            return label->isVisible() && label->text().contains("Start automatic retransmission to collect timing data.");
+          });
+        }
+        mode->setCurrentIndex(0);
+        old_diagnostics_hidden &= diagnostics_hidden();
+      }
+      send_dialog->reject();
+    });
+    CustomUsbSerialWidget::showSendSignalDialog(&owner, &stream, MessageId(1, 0x22222), "Test Signal");
+    if (!old_diagnostics_hidden) {
+      app.exit(26);
       return;
     }
     if (!QDir(QString::fromUtf8(argv[2])).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).isEmpty()) {

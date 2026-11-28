@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDeadlineTimer>
+#include <QStringList>
 #include <deque>
 #include <mutex>
 
@@ -34,6 +35,19 @@ class CustomUsbSerialStream : public LiveStream {
     uint16_t can[2];
   };
   std::optional<Utilization> utilization() const;
+  struct TxLatency {
+    uint32_t count;
+    uint32_t rx_mean_us, rx_max_us;
+    uint32_t submit_mean_us, submit_max_us;
+    uint32_t wake_mean_us, wake_max_us;
+    uint32_t drain_mean_us, drain_max_us;
+    uint32_t timeouts;
+    uint32_t ahead_mean, ahead_max;
+    uint32_t tx_count, tx_mean_us, tx_max_us, arbitration_losses;
+    uint32_t rx_to_tx_count, rx_to_tx_mean_us;
+    uint32_t same_fifo_mean, same_fifo_max, other_fifo_mean, other_fifo_max;
+  };
+  std::optional<TxLatency> txLatency(uint8_t bus) const;
 
   struct CapturedFrame {
     QByteArray data;
@@ -69,7 +83,12 @@ class CustomUsbSerialStream : public LiveStream {
                  std::optional<Counter> counter = std::nullopt,
                  std::optional<Checksum> checksum = std::nullopt);
   enum class TxState { Ready, Waiting, Queued, Acknowledged, Error };
-  QString txStatus(TxState* state = nullptr, bool include_result = true) const;
+  struct TxErrorDetails {
+    QStringList conditions;
+    uint32_t fifo, bus_diagnostics, transmit_errors, receive_errors, acknowledged;
+  };
+  QString txStatus(TxState* state = nullptr, bool include_result = true,
+                   std::optional<TxErrorDetails>* error_details = nullptr) const;
 
  private:
   void streamThread() override;
@@ -89,6 +108,7 @@ class CustomUsbSerialStream : public LiveStream {
   uint8_t tx_bus_ = 0;
   unsigned tx_acknowledged_ = 0;
   QString tx_feedback_error_;
+  std::optional<TxErrorDetails> tx_error_details_;
   bool repeat_active_ = false, repeat_cancelled_ = false, repeat_automatic_ = false;
   uint8_t repeat_bus_ = 0;
   QDeadlineTimer repeat_keepalive_{0}, repeat_deadline_{0};
@@ -98,6 +118,7 @@ class CustomUsbSerialStream : public LiveStream {
   std::unordered_map<MessageId, std::deque<CapturedFrame>> recent_data_frames_;
   Utilization utilization_{};
   QDeadlineTimer utilization_expiry_{0};
+  std::optional<TxLatency> tx_latency_[2];
   uint64_t frames_[2] = {}, gaps_[2] = {};
   uint64_t queue_drops_[2] = {}, overflows_[2] = {}, usb_aborts_ = 0;
   uint64_t corrupt_ = 0, resets_ = 0, last_record_ms_ = 0, late_timestamps_ = 0;

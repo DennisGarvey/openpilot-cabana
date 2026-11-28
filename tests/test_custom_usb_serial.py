@@ -113,6 +113,9 @@ def main():
             stream += encode(struct.pack('<BBBBIIQ', 1, 13, 0, 0, 124, 0, 125) +
                              b'I (2) can_mgr: ready\n')
             stream += encode(struct.pack('<BBBBIIQ6H', 1, 9, 0, 0, 124, 0, 130, 123, 234, 345, 456, 567, 678))
+            latency = encode(struct.pack('<BBBBIIQ22I', 1, 14, 1, 0, 124, 0, 135,
+                                         5, 200, 220, 30, 40, 140, 170, 60, 80, 3, 4, 8, 7, 100, 180, 2, 4, 330, 1, 3, 3, 6))
+            stream += latency
             # Split the wire records, delivering both reordered frames in the final write.
             start = 0
             for size in (1, 7, 2, 29, 1, 64, 3, 5, 108, len(stream)):
@@ -141,6 +144,8 @@ def main():
                 assert kind == (7 if automatic else 4)
                 result_kind = 8 if automatic else 6
                 tx_result(master, result_kind, 1, sequence, 7)
+                if automatic:
+                    os.write(master, latency)
                 if feedback == 'ack':
                     os.write(master, frame(1, sequence, 140, 0x22222, request[25:89], flags=13, boot=124, kind=11))
                     tx_result(master, 10, 1, sequence, 1)

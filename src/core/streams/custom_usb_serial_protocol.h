@@ -13,6 +13,15 @@
  * queueing. Overflow events indicate at least one lost frame, not an exact count.
  * Utilization (bus, flags and sequence zero): serial, CPU cores 0/1, shared
  * SPI, and CAN buses 0/1, each as u16 per mille over the last sample interval.
+ * TX latency (type 14, flags and sequence zero) reports per-bus automatic TX
+ * statistics for the last reporting interval. Its 108-byte body includes the
+ * common header and excludes the CRC. Fields starting at offset 20 are u32:
+ * RX-triggered requests; mean/peak for RX-to-detection, detection-to-queue,
+ * RX-task wait and receive processing (all us); timeout wakes with RX pending;
+ * mean/peak frames processed ahead; timestamped TX successes; mean/peak queue
+ * to hardware TX timestamp (us); arbitration-only losses; paired RX-to-TX
+ * samples and their mean (us); mean/peak frames ahead in the same and other
+ * FIFOs. Frame counts ahead use up to 32 preceding deliveries per sample.
  * TX feedback uses the TX result layout. A zero sequence announces support;
  * a nonzero sequence reports the outcome of one individual transmit attempt.
  * Session control uses a nonzero u64 session ID in the time field and
@@ -63,6 +72,9 @@
 #define DK_SESSION_KEEPALIVE 2
 #define DK_SESSION_STOP 3
 #define DK_LOG 13
+// Per-bus timing, FIFO backlog, and transmit outcome statistics.
+#define DK_TX_LATENCY 14
+#define DK_TX_LATENCY_SIZE 108
 #define DK_LOG_MAX_TEXT 199
 #define DK_TX_INCREMENT_COUNTER 16
 #define DK_TX_RECALCULATE_CHECKSUM 32
@@ -233,6 +245,9 @@ static inline size_t dk_decode(const uint8_t *wire, size_t n, uint8_t *raw)
             !raw[2] && !raw[3] && !dk_get(raw + 8, 4) ? out : 0;
     if (raw[1] == DK_STATUS)
         return out == DK_STATUS_SIZE + 2 && raw[3] == 0 ? out : 0;
+    if (raw[1] == DK_TX_LATENCY)
+        return out == DK_TX_LATENCY_SIZE + 2 && !raw[3] && !dk_get(raw + 8, 4) &&
+            (dk_get(raw + 20, 4) || dk_get(raw + 68, 4) || dk_get(raw + 80, 4)) ? out : 0;
     if (raw[1] == DK_UTILIZATION) {
         if (out != DK_UTILIZATION_SIZE + 2 || raw[2] || raw[3] || dk_get(raw + 8, 4)) return 0;
         for (size_t i = 20; i < DK_UTILIZATION_SIZE; i += 2)

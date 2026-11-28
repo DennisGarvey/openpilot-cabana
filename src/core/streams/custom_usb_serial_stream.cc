@@ -18,6 +18,7 @@ void CustomUsbSerialStream::setError(const QString& error) {
   std::lock_guard lock(stats_mutex_);
   error_ = error;
   utilization_expiry_ = QDeadlineTimer(0);
+  for (auto& latency : tx_latency_) latency.reset();
   tx_capability_ = QDeadlineTimer(0);
   tx_request_.clear();
   tx_status_ = tx_in_flight_ ? tr("USB connection lost. Transmission outcome unknown.") : error;
@@ -88,6 +89,12 @@ std::optional<CustomUsbSerialStream::Utilization> CustomUsbSerialStream::utiliza
   std::lock_guard lock(stats_mutex_);
   if (utilization_expiry_.hasExpired()) return std::nullopt;
   return utilization_;
+}
+
+std::optional<CustomUsbSerialStream::TxLatency> CustomUsbSerialStream::txLatency(uint8_t bus) const {
+  std::lock_guard lock(stats_mutex_);
+  if (bus >= 2) return std::nullopt;
+  return tx_latency_[bus];
 }
 
 std::optional<CustomUsbSerialStream::CapturedFrame> CustomUsbSerialStream::latestDataFrame(
@@ -170,7 +177,8 @@ void CustomUsbSerialStream::cancelRepeat() {
   }
 }
 
-QString CustomUsbSerialStream::txStatus(TxState* state, bool include_result) const {
+QString CustomUsbSerialStream::txStatus(TxState* state, bool include_result,
+                                        std::optional<TxErrorDetails>* error_details) const {
   std::lock_guard lock(stats_mutex_);
   auto result = [state](TxState current, const QString& message) {
     if (state) *state = current;
@@ -188,6 +196,7 @@ QString CustomUsbSerialStream::txStatus(TxState* state, bool include_result) con
     return result(TxState::Error, tr("Response timed out. Transmission outcome unknown."));
   if (tx_capability_.hasExpired() && !tx_in_flight_)
     return result(TxState::Waiting, tr("Waiting for USB transmission support."));
+  if (error_details && tx_state_ == TxState::Error) *error_details = tx_error_details_;
   return result(tx_state_, tx_status_);
 }
 
@@ -232,10 +241,12 @@ bool CustomUsbSerialStream::sendFrame(uint8_t bus, uint32_t address, uint8_t fla
   tx_bus_ = bus;
   tx_acknowledged_ = 0;
   tx_feedback_error_.clear();
+  tx_error_details_.reset();
   tx_deadline_ = QDeadlineTimer(1500);
   if (repeat) {
     repeat_active_ = true;
     repeat_automatic_ = repeat->automatic;
+    if (repeat_automatic_) tx_latency_[bus].reset();
     repeat_bus_ = bus;
     repeat_duration_ms_ = repeat->duration_ms;
     repeat_deadline_ = tx_deadline_;
@@ -338,6 +349,7 @@ void CustomUsbSerialStream::streamThread() {
       std::lock_guard lock(stats_mutex_);
       tx_capability_ = QDeadlineTimer(0);
       utilization_expiry_ = QDeadlineTimer(0);
+      for (auto& latency : tx_latency_) latency.reset();
       recent_data_frames_.clear();
       clearRepeat();
       tx_request_.clear();
@@ -446,6 +458,7 @@ void CustomUsbSerialStream::streamThread() {
           tx_capability_ = QDeadlineTimer(0);
           tx_boot_id_ = boot;
           utilization_expiry_ = QDeadlineTimer(0);
+          for (auto& latency : tx_latency_) latency.reset();
           clearRepeat();
           tx_request_.clear();
           recent_data_frames_.clear();
@@ -466,24 +479,30 @@ void CustomUsbSerialStream::streamThread() {
               if (!repeat_active_) {
                 tx_status_ = tr("Transmitted and acknowledged by another CAN node.");
               } else if (!repeat_cancelled_) {
-                tx_status_ = tr("Acknowledged frames: %1").arg(tx_acknowledged_);
+                tx_status_ = tr("Acknowledged frames (session total): %1").arg(tx_acknowledged_);
               }
             } else {
+              tx_error_details_.reset();
               tx_feedback_error_ = raw[20] == DK_TX_UNCONFIRMED
-                  ? tr("CAN bus %1: the controller reached its attempt limit without confirming transmission.").arg(bus)
-                  : tr("CAN bus %1: transmission outcome unknown.").arg(bus);
+                  ? tr("Could not confirm the send on CAN bus %1.").arg(bus)
+                  : tr("Could not determine whether the frame was sent on CAN bus %1.").arg(bus);
               if (n == DK_TX_FEEDBACK_DIAGNOSTICS_SIZE + 2) {
                 const auto fifo = dk_get(raw + 21, 4);
                 const auto bus_diag = dk_get(raw + 25, 4);
                 const auto counters = dk_get(raw + 29, 4);
-                QStringList flags;
-                if (fifo & (1u << 6)) flags += tr("arbitration lost");
-                if (fifo & (1u << 5)) flags += tr("transmit error");
-                if (counters & (1u << 21)) flags += tr("bus-off");
-                if (bus_diag & (1u << 18)) flags += tr("missing ACK recorded by controller");
-                if (!flags.isEmpty()) tx_feedback_error_ += QStringLiteral("\n") + flags.join(tr(", "));
-                tx_feedback_error_ += tr("\nTEC %1, REC %2 · FIFO 0x%3 · bus diagnostics 0x%4")
-                    .arg((counters >> 8) & 0xff).arg(counters & 0xff).arg(fifo, 0, 16).arg(bus_diag, 0, 16);
+                QStringList details;
+                if (fifo & (1u << 5)) details += tr("The controller reported a transmit error.");
+                if (fifo & (1u << 6)) details += tr("The controller flagged lost arbitration (another frame had priority).");
+                if (counters & (1u << 21)) details += tr("The controller stopped transmitting after too many errors (bus-off).");
+                if (bus_diag & (1u << 18))
+                  details += tr("The controller has recorded a missing acknowledgment. This may be from an earlier send.");
+                tx_error_details_ = TxErrorDetails{details, static_cast<uint32_t>(fifo),
+                    static_cast<uint32_t>(bus_diag), static_cast<uint32_t>((counters >> 8) & 0xff),
+                    static_cast<uint32_t>(counters & 0xff), tx_acknowledged_};
+                details += tr("Controller error counters at failure — transmit %L1, receive %L2")
+                               .arg((counters >> 8) & 0xff).arg(counters & 0xff);
+                details += tr("Raw codes — FIFO 0x%1, bus diagnostics 0x%2").arg(fifo, 0, 16).arg(bus_diag, 0, 16);
+                tx_feedback_error_ += QLatin1Char('\n') + details.join(QLatin1Char('\n'));
               }
               tx_state_ = TxState::Error;
               tx_status_ = tx_feedback_error_;
@@ -558,7 +577,7 @@ void CustomUsbSerialStream::streamThread() {
                 tx_state_ = TxState::Error;
                 tx_status_ = tx_feedback_error_;
               }
-              tx_status_ += QStringLiteral("\n") + tr("Acknowledged frames: %1").arg(tx_acknowledged_);
+              tx_status_ += QStringLiteral("\n") + tr("Acknowledged frames (session total): %1").arg(tx_acknowledged_);
             }
             tx_in_flight_ = 0;
             clearRepeat();
@@ -570,6 +589,33 @@ void CustomUsbSerialStream::streamThread() {
           if (firmware_log_.size() == log_history_limit) firmware_log_.pop_front();
           firmware_log_.push_back(QString::fromUtf8(reinterpret_cast<const char*>(raw + 20), n - 22));
           ++firmware_log_count_;
+          continue;
+        }
+        if (raw[1] == DK_TX_LATENCY) {
+          tx_latency_[bus] = TxLatency{
+              static_cast<uint32_t>(dk_get(raw + 20, 4)),
+              static_cast<uint32_t>(dk_get(raw + 24, 4)),
+              static_cast<uint32_t>(dk_get(raw + 28, 4)),
+              static_cast<uint32_t>(dk_get(raw + 32, 4)),
+              static_cast<uint32_t>(dk_get(raw + 36, 4)),
+              static_cast<uint32_t>(dk_get(raw + 40, 4)),
+              static_cast<uint32_t>(dk_get(raw + 44, 4)),
+              static_cast<uint32_t>(dk_get(raw + 48, 4)),
+              static_cast<uint32_t>(dk_get(raw + 52, 4)),
+              static_cast<uint32_t>(dk_get(raw + 56, 4)),
+              static_cast<uint32_t>(dk_get(raw + 60, 4)),
+              static_cast<uint32_t>(dk_get(raw + 64, 4)),
+              static_cast<uint32_t>(dk_get(raw + 68, 4)),
+              static_cast<uint32_t>(dk_get(raw + 72, 4)),
+              static_cast<uint32_t>(dk_get(raw + 76, 4)),
+              static_cast<uint32_t>(dk_get(raw + 80, 4)),
+              static_cast<uint32_t>(dk_get(raw + 84, 4)),
+              static_cast<uint32_t>(dk_get(raw + 88, 4)),
+              static_cast<uint32_t>(dk_get(raw + 92, 4)),
+              static_cast<uint32_t>(dk_get(raw + 96, 4)),
+              static_cast<uint32_t>(dk_get(raw + 100, 4)),
+              static_cast<uint32_t>(dk_get(raw + 104, 4)),
+          };
           continue;
         }
         if (raw[1] == DK_UTILIZATION) {
